@@ -6,10 +6,12 @@
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
     "lint": "oxlint",
+    "test": "bun test",
     "format": "oxfmt --write src"
   },
   "dependencies": {
-    "awilix": "latest"
+    "awilix": "latest",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/bun": "latest",
