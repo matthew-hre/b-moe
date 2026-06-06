@@ -1,15 +1,16 @@
-import { AwilixContainer, createContainer } from "awilix";
+import { asClass, createContainer, type AwilixContainer } from "awilix";
+import { InMemoryRunStore, type RunStore } from "../store/run.store";
 
 export interface Cradle {
-  // services go here
+  readonly runStore: RunStore;
 }
 
 export function createDiContainer(): AwilixContainer<Cradle> {
   const container = createContainer<Cradle>();
 
-  // container.register({
-  //   myService: asClass(MyService).singleton(),
-  // });
+  container.register({
+    runStore: asClass(InMemoryRunStore).singleton(),
+  });
 
   return container;
 }

@@ -2,18 +2,32 @@ import type { AwilixContainer } from "awilix";
 import type { Cradle } from "../config/container";
 
 interface Routes {
-  fetch(request: Request): Response;
+  fetch(request: Request): Promise<Response>;
 }
 
-export function createRoutes(_container: AwilixContainer<Cradle>): Routes {
+function jsonResponse(body: unknown, init?: ResponseInit): Response {
+  return new Response(JSON.stringify(body), {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...init?.headers,
+    },
+  });
+}
+
+export function createRoutes(container: AwilixContainer<Cradle>): Routes {
   return {
-    fetch(request: Request) {
+    async fetch(request: Request) {
       const url = new URL(request.url);
 
       if (url.pathname === "/health" && request.method === "GET") {
-        return new Response(JSON.stringify({ status: "ok" }), {
-          headers: { "Content-Type": "application/json" },
-        });
+        return jsonResponse({ status: "ok" });
+      }
+
+      if (url.pathname === "/runs" && request.method === "GET") {
+        const runs = await container.cradle.runStore.listRuns();
+
+        return jsonResponse({ runs });
       }
 
       return new Response("Not Found", { status: 404 });
