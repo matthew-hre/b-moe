@@ -1,5 +1,6 @@
 import type { AwilixContainer } from "awilix";
 import type { Cradle } from "../config/container";
+import { getAssignedLinearIssueId, LinearWebhookEventSchema } from "../models/linear";
 
 interface Routes {
   fetch(request: Request): Promise<Response>;
@@ -28,6 +29,32 @@ export function createRoutes(container: AwilixContainer<Cradle>): Routes {
         const runs = await container.cradle.runStore.listRuns();
 
         return jsonResponse({ runs });
+      }
+
+      if (url.pathname === "/webhook/linear" && request.method === "POST") {
+        let body: unknown;
+
+        try {
+          body = await request.json();
+        } catch {
+          return jsonResponse({ error: "Invalid JSON body" }, { status: 400 });
+        }
+
+        const parseResult = LinearWebhookEventSchema.safeParse(body);
+
+        if (!parseResult.success) {
+          return jsonResponse({ error: "Invalid Linear webhook payload" }, { status: 400 });
+        }
+
+        const linearIssueId = getAssignedLinearIssueId(parseResult.data);
+
+        if (!linearIssueId) {
+          return jsonResponse({ ignored: true });
+        }
+
+        const run = await container.cradle.runStore.createRun({ linearIssueId });
+
+        return jsonResponse({ run });
       }
 
       return new Response("Not Found", { status: 404 });
