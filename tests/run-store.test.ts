@@ -18,10 +18,11 @@ describe("InMemoryRunStore", () => {
     const now = new Date("2025-01-01T00:00:00.000Z");
     const store = createStore(now);
 
-    const run = await store.createRun({ linearIssueId: "issue-1" });
+    const run = await store.createRun({ agentSessionId: "session-1", linearIssueId: "issue-1" });
 
     expect(run).toEqual({
       id: "run-1",
+      agentSessionId: "session-1",
       linearIssueId: "issue-1",
       state: "queued",
       createdAt: now,
@@ -31,11 +32,25 @@ describe("InMemoryRunStore", () => {
 
   test("gets runs by id", async () => {
     const store = createStore();
-    const createdRun = await store.createRun({ linearIssueId: "issue-1" });
+    const createdRun = await store.createRun({
+      agentSessionId: "session-1",
+      linearIssueId: "issue-1",
+    });
 
     const foundRun = await store.getRun(createdRun.id);
 
     expect(foundRun).toEqual(createdRun);
+  });
+
+  test("gets runs by agent session id", async () => {
+    const store = createStore();
+    const createdRun = await store.createRun({
+      agentSessionId: "session-1",
+      linearIssueId: "issue-1",
+    });
+
+    expect(store.getRunByAgentSession("session-1")).resolves.toEqual(createdRun);
+    expect(store.getRunByAgentSession("session-missing")).resolves.toBeUndefined();
   });
 
   test("returns undefined for missing runs", async () => {
@@ -51,15 +66,15 @@ describe("InMemoryRunStore", () => {
       getCurrentDate: () => new Date("2025-01-01T00:00:00.000Z"),
     });
 
-    const firstRun = await store.createRun({ linearIssueId: "issue-1" });
-    const secondRun = await store.createRun({ linearIssueId: "issue-2" });
+    const firstRun = await store.createRun({ agentSessionId: "session-1", linearIssueId: "issue-1" });
+    const secondRun = await store.createRun({ agentSessionId: "session-2", linearIssueId: "issue-2" });
 
     expect(store.listRuns()).resolves.toEqual([firstRun, secondRun]);
   });
 
   test("saves valid runs", async () => {
     const store = createStore();
-    const run = await store.createRun({ linearIssueId: "issue-1" });
+    const run = await store.createRun({ agentSessionId: "session-1", linearIssueId: "issue-1" });
     const transitionedRun = transitionRun(
       run,
       "refining",
@@ -86,9 +101,9 @@ describe("InMemoryRunStore", () => {
   test("rejects duplicate run ids", async () => {
     const store = createStore();
 
-    await store.createRun({ linearIssueId: "issue-1" });
+    await store.createRun({ agentSessionId: "session-1", linearIssueId: "issue-1" });
 
-    expect(store.createRun({ linearIssueId: "issue-2" })).rejects.toThrow(
+    expect(store.createRun({ agentSessionId: "session-2", linearIssueId: "issue-2" })).rejects.toThrow(
       RunAlreadyExistsError,
     );
   });
@@ -96,7 +111,7 @@ describe("InMemoryRunStore", () => {
   test("transitions stored runs", async () => {
     const transitionedAt = new Date("2025-01-01T01:00:00.000Z");
     const store = createStore(transitionedAt);
-    const run = await store.createRun({ linearIssueId: "issue-1" });
+    const run = await store.createRun({ agentSessionId: "session-1", linearIssueId: "issue-1" });
 
     const transitionedRun = await store.transitionRun(run.id, "refining");
 

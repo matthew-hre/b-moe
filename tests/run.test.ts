@@ -4,18 +4,21 @@ import {
   type Run,
   type RunState,
   canTransitionRun,
+  resumeRun,
   transitionRun,
 } from "../src/models/run";
 
-function createRun(state: RunState = "queued"): Run {
+function createRun(state: RunState = "queued", overrides: Partial<Run> = {}): Run {
   const createdAt = new Date("2025-01-01T00:00:00.000Z");
 
   return {
     id: "run-1",
+    agentSessionId: "session-1",
     linearIssueId: "issue-1",
     state,
     createdAt,
     updatedAt: createdAt,
+    ...overrides,
   };
 }
 
@@ -29,6 +32,12 @@ describe("run state machine", () => {
     ["monitoring", "responding"],
     ["responding", "monitoring"],
     ["monitoring", "completed"],
+    ["refining", "awaiting_input"],
+    ["planning", "awaiting_input"],
+    ["acting", "awaiting_input"],
+    ["awaiting_input", "refining"],
+    ["awaiting_input", "planning"],
+    ["awaiting_input", "acting"],
   ] satisfies Array<[RunState, RunState]>)
     ("allows %s to %s", (currentState, nextState) => {
       expect(canTransitionRun(currentState, nextState)).toBe(true);
@@ -81,5 +90,27 @@ describe("run state machine", () => {
     expect(completedRun.state).toBe("completed");
     expect(completedRun.updatedAt).toBe(completedAt);
     expect(completedRun.completedAt).toBe(completedAt);
+  });
+
+  test("records the paused phase when waiting on human input", () => {
+    const run = createRun("planning");
+
+    const pausedRun = transitionRun(run, "awaiting_input");
+
+    expect(pausedRun.state).toBe("awaiting_input");
+    expect(pausedRun.pausedFrom).toBe("planning");
+  });
+
+  test("resumes a paused run back into the phase it paused from", () => {
+    const pausedRun = transitionRun(createRun("acting"), "awaiting_input");
+
+    const resumedRun = resumeRun(pausedRun);
+
+    expect(resumedRun.state).toBe("acting");
+    expect(resumedRun.pausedFrom).toBeUndefined();
+  });
+
+  test("throws when resuming a run that is not awaiting input", () => {
+    expect(() => resumeRun(createRun("acting"))).toThrow(InvalidRunStateTransitionError);
   });
 });

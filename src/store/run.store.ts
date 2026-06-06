@@ -3,12 +3,14 @@ import { RunSchema, type Run, type RunState, transitionRun } from "../models/run
 
 export interface CreateRunInput {
   readonly id?: string;
-  readonly linearIssueId: string;
+  readonly agentSessionId: string;
+  readonly linearIssueId?: string;
 }
 
 export interface RunStore {
   createRun(input: CreateRunInput): Promise<Run>;
   getRun(id: string): Promise<Run | undefined>;
+  getRunByAgentSession(agentSessionId: string): Promise<Run | undefined>;
   listRuns(): Promise<Run[]>;
   saveRun(run: Run): Promise<Run>;
   transitionRun(id: string, nextState: RunState): Promise<Run>;
@@ -55,6 +57,7 @@ export class InMemoryRunStore implements RunStore {
     const now = this.getCurrentDate();
     const run = RunSchema.parse({
       id: input.id ?? this.createRunId(),
+      agentSessionId: input.agentSessionId,
       linearIssueId: input.linearIssueId,
       state: "queued",
       createdAt: now,
@@ -78,6 +81,16 @@ export class InMemoryRunStore implements RunStore {
     }
 
     return RunSchema.parse(run);
+  }
+
+  async getRunByAgentSession(agentSessionId: string): Promise<Run | undefined> {
+    for (const run of this.runs.values()) {
+      if (run.agentSessionId === agentSessionId) {
+        return RunSchema.parse(run);
+      }
+    }
+
+    return undefined;
   }
 
   async listRuns(): Promise<Run[]> {

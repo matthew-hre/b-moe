@@ -5,6 +5,7 @@ export const runStates = [
   "refining",
   "planning",
   "acting",
+  "awaiting_input",
   "pr_opened",
   "monitoring",
   "responding",
@@ -27,8 +28,10 @@ export type PullRequestInfo = Readonly<z.infer<typeof PullRequestInfoSchema>>;
 export const RunSchema = z
   .object({
     id: z.string().min(1),
-    linearIssueId: z.string().min(1),
+    agentSessionId: z.string().min(1),
+    linearIssueId: z.string().min(1).optional(),
     state: RunStateSchema,
+    pausedFrom: RunStateSchema.optional(),
     createdAt: z.date(),
     updatedAt: z.date(),
     pullRequest: PullRequestInfoSchema.optional(),
@@ -38,11 +41,16 @@ export const RunSchema = z
 
 export type Run = Readonly<z.infer<typeof RunSchema>>;
 
+// Phases the agent can pause from to wait on a human (`awaiting_input`), and
+// resume back into when a `prompted` webhook arrives.
+const pausablePhases = ["refining", "planning", "acting"] as const satisfies readonly RunState[];
+
 const allowedTransitions = {
   queued: ["refining"],
-  refining: ["planning"],
-  planning: ["acting"],
-  acting: ["pr_opened"],
+  refining: ["planning", "awaiting_input"],
+  planning: ["acting", "awaiting_input"],
+  acting: ["pr_opened", "awaiting_input"],
+  awaiting_input: pausablePhases,
   pr_opened: ["monitoring"],
   monitoring: ["responding", "completed"],
   responding: ["monitoring"],
@@ -73,7 +81,24 @@ export function transitionRun(run: Run, nextState: RunState, now = new Date()): 
   return {
     ...run,
     state: nextState,
+    // Remember the phase we paused from so a `prompted` event can resume it,
+    // and clear it once we leave `awaiting_input`.
+    pausedFrom: nextState === "awaiting_input" ? run.state : undefined,
     updatedAt: now,
     completedAt: nextState === "completed" ? now : run.completedAt,
   };
+}
+
+// Resume a paused run back into the phase it was working on before it asked a
+// human for input.
+export function resumeRun(run: Run, now = new Date()): Run {
+  if (run.state !== "awaiting_input") {
+    throw new InvalidRunStateTransitionError(run.state, run.state);
+  }
+
+  if (!run.pausedFrom) {
+    throw new Error(`Run ${run.id} is awaiting input but has no phase to resume`);
+  }
+
+  return transitionRun(run, run.pausedFrom, now);
 }

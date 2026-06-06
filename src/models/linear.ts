@@ -1,91 +1,91 @@
 import { z } from "zod";
 
-export const LinearWebhookActionSchema = z.enum(["create", "update", "remove"]);
-export const LinearWebhookTypeSchema = z.enum(["Issue"]);
+export const AgentSessionEventActionSchema = z.enum(["created", "prompted"]);
+export type AgentSessionEventAction = z.infer<typeof AgentSessionEventActionSchema>;
 
-export const LinearIssueUserSchema = z
+export const AgentSessionIssueSchema = z
   .object({
     id: z.string().min(1),
-    name: z.string().min(1).optional(),
-    email: z.email().optional(),
-    url: z.url().optional(),
-  })
-  .loose();
-
-export const LinearIssueDataSchema = z
-  .object({
-    id: z.string().min(1),
-    createdAt: z.iso.datetime().optional(),
-    updatedAt: z.iso.datetime().optional(),
-    number: z.number().int().positive().optional(),
-    title: z.string().min(1).optional(),
     identifier: z.string().min(1).optional(),
+    title: z.string().min(1).optional(),
+    description: z.string().optional(),
     url: z.url().optional(),
-    assigneeId: z.string().min(1).nullable().optional(),
-    assignee: LinearIssueUserSchema.nullable().optional(),
   })
   .loose();
 
-export const LinearIssueWebhookEventSchema = z
+export const AgentSessionSchema = z
   .object({
-    action: LinearWebhookActionSchema,
-    type: LinearWebhookTypeSchema,
-    actor: z.unknown().optional(),
-    createdAt: z.iso.datetime(),
-    data: LinearIssueDataSchema,
-    url: z.url().optional(),
-    updatedFrom: z.record(z.string(), z.unknown()).optional(),
+    id: z.string().min(1),
+    issue: AgentSessionIssueSchema.nullable().optional(),
+  })
+  .loose();
+
+export const AgentActivitySchema = z
+  .object({
+    body: z.string().optional(),
+    signal: z.string().optional(),
+  })
+  .loose();
+
+export const AgentSessionEventWebhookSchema = z
+  .object({
+    type: z.literal("AgentSessionEvent"),
+    action: AgentSessionEventActionSchema,
+    createdAt: z.iso.datetime().optional(),
+    agentSession: AgentSessionSchema,
+    promptContext: z.string().optional(),
+    agentActivity: AgentActivitySchema.nullable().optional(),
+    previousComments: z.unknown().optional(),
+    guidance: z.unknown().optional(),
     organizationId: z.string().min(1).optional(),
-    webhookTimestamp: z.number().int().nonnegative(),
+    webhookTimestamp: z.number().int().nonnegative().optional(),
     webhookId: z.string().min(1).optional(),
   })
   .loose();
 
-export const LinearOtherWebhookEventSchema = z
+export const OtherLinearWebhookEventSchema = z
   .object({
-    type: z.string().min(1).refine((type) => type !== "Issue"),
-    action: z.string().min(1),
-    createdAt: z.iso.datetime().optional(),
-    webhookTimestamp: z.number().int().nonnegative().optional(),
+    type: z.string().min(1).refine((type) => type !== "AgentSessionEvent"),
+    action: z.string().min(1).optional(),
   })
   .loose();
 
 export const LinearWebhookEventSchema = z.union([
-  LinearIssueWebhookEventSchema,
-  LinearOtherWebhookEventSchema,
+  AgentSessionEventWebhookSchema,
+  OtherLinearWebhookEventSchema,
 ]);
 
-export type LinearIssueWebhookEvent = Readonly<z.infer<typeof LinearIssueWebhookEventSchema>>;
+export type AgentSessionEventWebhook = Readonly<z.infer<typeof AgentSessionEventWebhookSchema>>;
 export type LinearWebhookEvent = Readonly<z.infer<typeof LinearWebhookEventSchema>>;
 
-export function getAssignedLinearIssueId(event: LinearWebhookEvent): string | undefined {
-  const parseResult = LinearIssueWebhookEventSchema.safeParse(event);
+// A normalized view of an AgentSessionEvent with the fields a run needs. A
+// `created` event starts a run; a `prompted` event resumes an existing one.
+export interface AgentSessionTrigger {
+  readonly action: AgentSessionEventAction;
+  readonly agentSessionId: string;
+  readonly linearIssueId?: string;
+  readonly promptContext?: string;
+  readonly promptBody?: string;
+  readonly stopRequested: boolean;
+}
+
+export function getAgentSessionTrigger(
+  event: LinearWebhookEvent,
+): AgentSessionTrigger | undefined {
+  const parseResult = AgentSessionEventWebhookSchema.safeParse(event);
 
   if (!parseResult.success) {
     return undefined;
   }
 
-  const issueEvent = parseResult.data;
+  const sessionEvent = parseResult.data;
 
-  if (!issueEvent.data.assigneeId && !issueEvent.data.assignee) {
-    return undefined;
-  }
-
-  if (issueEvent.action === "create") {
-    return issueEvent.data.id;
-  }
-
-  if (issueEvent.action !== "update") {
-    return undefined;
-  }
-
-  if (!issueEvent.updatedFrom) {
-    return undefined;
-  }
-
-  if (!("assigneeId" in issueEvent.updatedFrom) && !("assignee" in issueEvent.updatedFrom)) {
-    return undefined;
-  }
-
-  return issueEvent.data.id;
+  return {
+    action: sessionEvent.action,
+    agentSessionId: sessionEvent.agentSession.id,
+    linearIssueId: sessionEvent.agentSession.issue?.id,
+    promptContext: sessionEvent.promptContext,
+    promptBody: sessionEvent.agentActivity?.body,
+    stopRequested: sessionEvent.agentActivity?.signal === "stop",
+  };
 }

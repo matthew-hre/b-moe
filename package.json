@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
+    "linear:invite": "bun run src/scripts/generate-linear-invite-link.ts",
     "lint": "oxlint",
     "test": "bun test",
     "format": "oxfmt --write src"
