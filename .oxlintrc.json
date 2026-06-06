@@ -1,0 +1,54 @@
+{
+  "env": {
+    "node": true,
+    "browser": false
+  },
+  "plugins": ["typescript", "import", "node", "promise"],
+  "rules": {
+    "no-console": "warn",
+    "curly": ["error", "multi-line"],
+    "prefer-const": ["error", { "destructuring": "all" }],
+    "prefer-destructuring": [
+      "error",
+      {
+        "VariableDeclarator": { "array": false, "object": true }
+      }
+    ],
+    "eqeqeq": ["error", "always"],
+    "no-var": "error",
+    "no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
+    "typescript/consistent-indexed-object-style": ["error", "record"],
+    "typescript/explicit-function-return-type": [
+      "warn",
+      { "allowExpressions": true, "allowTypedFunctionExpressions": true }
+    ],
+    "typescript/no-explicit-any": "warn",
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/no-non-null-assertion": "warn",
+    "typescript/no-unnecessary-type-assertion": "warn",
+    "typescript/ban-ts-comment": [
+      "error",
+      { "ts-expect-error": "allow-with-description" }
+    ],
+    "import/no-cycle": "warn",
+    "import/no-default-export": "off"
+  },
+  "overrides": [
+    {
+      "files": ["**/*.test.ts", "**/*.spec.ts"],
+      "rules": {
+        "no-console": "off"
+      }
+    }
+  ],
+  "ignorePatterns": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/build/**",
+    ".direnv/**"
+  ],
+  "settings": {
+    "import/resolver": "node"
+  }
+}
