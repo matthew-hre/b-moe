@@ -5,6 +5,8 @@ import type { LinearAgentClient } from "../services/linear.service";
 import type { PlanningClient } from "../services/planning.service";
 import type { SandboxClient } from "../services/sandbox.service";
 import type { PiClient } from "../services/pi.service";
+import type { GitClient } from "../services/git.service";
+import type { GitHubClient } from "../services/github.service";
 import type { RedisClient } from "../store/redis";
 import type { RunStore } from "../store/run.store";
 
@@ -13,6 +15,8 @@ export interface AgentRunWorkerDependencies {
   readonly planningService: PlanningClient;
   readonly sandboxService: SandboxClient;
   readonly piService: PiClient;
+  readonly gitService: GitClient;
+  readonly githubService: GitHubClient;
   readonly redisClient: RedisClient;
   readonly runStore: RunStore;
 }
@@ -57,7 +61,7 @@ export class AgentRunWorker {
 
 export async function processAgentRun(
   runId: string,
-  { linearService, planningService, sandboxService, piService, runStore }: AgentRunWorkerDependencies,
+  { linearService, planningService, sandboxService, piService, gitService, githubService, runStore }: AgentRunWorkerDependencies,
 ): Promise<void> {
   const run = await runStore.getRun(runId);
 
@@ -86,12 +90,12 @@ export async function processAgentRun(
   }
 
   if (run.state === "acting") {
-    await processActing(run, { linearService, sandboxService, piService });
+    await processActing(run, { linearService, sandboxService, piService, gitService, githubService, runStore });
     return;
   }
 
   if (run.state === "planning") {
-    await processPlanReview(run, { linearService, planningService, sandboxService, piService, runStore });
+    await processPlanReview(run, { linearService, planningService, sandboxService, piService, gitService, githubService, runStore });
     return;
   }
 
@@ -112,7 +116,7 @@ export async function processAgentRun(
 
 async function processPlanReview(
   run: Run,
-  dependencies: Pick<AgentRunWorkerDependencies, "linearService" | "planningService" | "sandboxService" | "piService" | "runStore">,
+  dependencies: Pick<AgentRunWorkerDependencies, "linearService" | "planningService" | "sandboxService" | "piService" | "gitService" | "githubService" | "runStore">,
 ): Promise<void> {
   const { linearService, planningService, runStore } = dependencies;
 
@@ -158,22 +162,98 @@ export function isPlanApproval(promptBody: string | undefined): boolean {
 
 async function processActing(
   run: Run,
-  { linearService, sandboxService, piService }: Pick<AgentRunWorkerDependencies, "linearService" | "sandboxService" | "piService">,
+  { linearService, sandboxService, piService, gitService, githubService, runStore }: Pick<AgentRunWorkerDependencies, "linearService" | "sandboxService" | "piService" | "gitService" | "githubService" | "runStore">,
 ): Promise<void> {
+  console.log(`[agent-run-worker] acting start runId=${run.id} repoUrl=${run.repoUrl ?? "unset"}`);
   await linearService.emitActivity(run.agentSessionId, {
-    type: "action",
+    type: "thought",
     body: "Starting implementation in an isolated sandbox.",
   });
 
-  const sandbox = await sandboxService.createSession(run);
+  const sandbox = await runStep(run.id, "create sandbox", () => sandboxService.createSession(run));
 
   try {
-    const result = await piService.act({ run, sandbox });
+    const result = await runStep(run.id, "run Pi", () => piService.act({
+      run,
+      sandbox,
+      onThought: (thought) => linearService.emitActivity(run.agentSessionId, { type: "thought", body: thought }),
+      onProgress: (message: string) => linearService.emitActivity(run.agentSessionId, { type: "thought", body: message }),
+    }));
+    const gitSummary = await runStep(run.id, "describe git head", () => gitService.describeHead({
+      workingDirectory: sandbox.workingDirectory,
+      baseBranch: run.baseBranch,
+    }));
+    console.log(`[agent-run-worker] git summary runId=${run.id}: ${gitSummary}`);
+    await runStep(run.id, "commit pending changes", () => gitService.commitAll({
+      workingDirectory: sandbox.workingDirectory,
+      message: run.linearIssueId ? `${run.linearIssueId}: B-MOE changes` : "B-MOE changes",
+    }));
+    await linearService.emitActivity(run.agentSessionId, {
+      type: "thought",
+      body: "Committed any pending workspace changes.",
+    });
+    const hasChanges = await runStep(run.id, "check git changes", () => gitService.hasChanges({
+      workingDirectory: sandbox.workingDirectory,
+      baseBranch: run.baseBranch,
+    }));
+
+    if (!hasChanges) {
+      await linearService.emitActivity(run.agentSessionId, {
+        type: "response",
+        body: `${result.summary}\n\nPi completed but did not produce any git changes, so I’m not opening a PR yet.`,
+      });
+      return;
+    }
+
+    await runStep(run.id, "push branch", () => gitService.pushBranch({
+      workingDirectory: sandbox.workingDirectory,
+      branchName: sandbox.branchName,
+      repoUrl: run.repoUrl,
+    }));
+    await linearService.emitActivity(run.agentSessionId, {
+      type: "thought",
+      body: `Pushed branch \`${sandbox.branchName}\`.`,
+    });
+    const pullRequest = await runStep(run.id, "create pull request", () => githubService.createPullRequest({
+      run,
+      repoUrl: run.repoUrl ?? "",
+      branchName: sandbox.branchName,
+      baseBranch: run.baseBranch,
+      summary: result.summary,
+    }));
+    const prOpenedRun = await runStore.transitionRun(run.id, "pr_opened");
+    await runStore.saveRun({ ...prOpenedRun, pullRequest });
+    await runStep(run.id, "add PR URL to Linear", () => linearService.addPullRequestUrl(run.agentSessionId, {
+      label: "Pull request",
+      url: pullRequest.url,
+    }));
     await linearService.emitActivity(run.agentSessionId, {
       type: "response",
-      body: result.summary,
+      body: `${result.summary}\n\nOpened PR: ${pullRequest.url}`,
     });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await linearService.emitActivity(run.agentSessionId, {
+      type: "response",
+      body: `I hit an implementation error: ${message}`,
+    });
+    throw error;
   } finally {
-    await sandboxService.destroySession(sandbox);
+    await runStep(run.id, "destroy sandbox", () => sandboxService.destroySession(sandbox));
+  }
+}
+
+async function runStep<T>(runId: string, step: string, action: () => Promise<T>): Promise<T> {
+  console.log(`[agent-run-worker] ${step} start runId=${runId}`);
+
+  try {
+    const result = await action();
+    console.log(`[agent-run-worker] ${step} done runId=${runId}`);
+
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.log(`[agent-run-worker] ${step} failed runId=${runId}: ${message}`);
+    throw new Error(`${step} failed: ${message}`, { cause: error });
   }
 }

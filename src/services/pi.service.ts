@@ -1,18 +1,314 @@
+import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import type { Run } from "../models/run";
+import type { Env } from "../config/env";
 import type { SandboxSession } from "./sandbox.service";
 
 export interface PiActResult {
   readonly summary: string;
+  readonly stopReason: string;
+  readonly toolCallCount: number;
 }
 
 export interface PiClient {
-  act(input: { run: Run; sandbox: SandboxSession }): Promise<PiActResult>;
+  act(input: { run: Run; sandbox: SandboxSession; onThought?: (thought: string) => Promise<void>; onProgress?: (message: string) => Promise<void> }): Promise<PiActResult>;
+}
+
+export interface PiRpcRunInput {
+  readonly cwd: string;
+  readonly prompt: string;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly onThought?: (thought: string) => Promise<void>;
+  readonly onProgress?: (message: string) => Promise<void>;
+}
+
+export interface PiRpcRunner {
+  run(input: PiRpcRunInput): Promise<readonly unknown[]>;
+}
+
+export interface PiServiceDependencies {
+  readonly env: Env;
+  readonly rpcRunner?: PiRpcRunner;
 }
 
 export class PiService implements PiClient {
-  async act({ run, sandbox }: { run: Run; sandbox: SandboxSession }): Promise<PiActResult> {
+  private readonly env: Env;
+  private readonly rpcRunner: PiRpcRunner;
+
+  constructor({ env, rpcRunner = new ChildProcessPiRpcRunner() }: PiServiceDependencies) {
+    this.env = env;
+    this.rpcRunner = rpcRunner;
+  }
+
+  async act({ run, sandbox, onThought, onProgress }: { run: Run; sandbox: SandboxSession; onThought?: (thought: string) => Promise<void>; onProgress?: (message: string) => Promise<void> }): Promise<PiActResult> {
+    const events = await this.rpcRunner.run({
+      cwd: sandbox.workingDirectory,
+      prompt: buildActPrompt(run, sandbox),
+      command: this.env.piCommand,
+      args: buildPiArgs(this.env),
+      onThought,
+      onProgress,
+    });
+    const agentEnd = events.find(isAgentEndEvent);
+    const messages = agentEnd?.messages ?? events.filter(isMessageEndEvent).map((event) => event.message);
+
+    if (messages.length === 0) {
+      throw new Error(`Pi RPC completed without an agent_end event; events=${summarizeEventTypes(events)}`);
+    }
+
+    const assistantMessages = messages.filter(isAssistantMessage);
+    const lastAssistantMessage = assistantMessages[assistantMessages.length - 1];
+    const summary = extractText(lastAssistantMessage) || "Pi completed without a text summary.";
+
     return {
-      summary: `Pi acting stub prepared run ${run.id} in ${sandbox.workingDirectory}`,
+      summary,
+      stopReason: lastAssistantMessage?.stopReason ?? "unknown",
+      toolCallCount: events.filter(isToolExecutionStartEvent).length,
     };
   }
+}
+
+export class ChildProcessPiRpcRunner implements PiRpcRunner {
+  async run(input: PiRpcRunInput): Promise<readonly unknown[]> {
+    console.log(`[pi-service] spawning ${input.command} ${input.args.join(" ")} cwd=${input.cwd}`);
+    const child = spawn(input.command, [...input.args, input.prompt], {
+      cwd: input.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const events: unknown[] = [];
+    const thoughtPromises: Promise<void>[] = [];
+    const progressPromises: Promise<void>[] = [];
+    let stderr = "";
+    const decoder = new StringDecoder("utf8");
+    let buffer = "";
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      buffer += decoder.write(chunk);
+      for (;;) {
+        const newlineIndex = buffer.indexOf("\n");
+        if (newlineIndex === -1) {
+          break;
+        }
+
+        let line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line.endsWith("\r")) {
+          line = line.slice(0, -1);
+        }
+        if (line.trim()) {
+          try {
+            const event = JSON.parse(line);
+            events.push(event);
+            if (isRecord(event)) {
+              console.log(`[pi-service] rpc event type=${String(event.type ?? "unknown")}`);
+              if (isMessageEndEvent(event) && isAssistantMessage(event.message)) {
+                for (const thought of extractThinking([event.message])) {
+                  const promise = input.onThought?.(thought);
+                  if (promise) {
+                    thoughtPromises.push(promise);
+                  }
+                }
+                for (const progress of extractToolCallProgress(event.message)) {
+                  const promise = input.onProgress?.(progress);
+                  if (promise) {
+                    progressPromises.push(promise);
+                  }
+                }
+              }
+              if (isToolExecutionEndEvent(event)) {
+                const progress = summarizeToolResult(event);
+                if (progress) {
+                  const promise = input.onProgress?.(progress);
+                  if (promise) {
+                    progressPromises.push(promise);
+                  }
+                }
+              }
+            }
+          } catch {
+            console.log(`[pi-service] non-json stdout: ${line.slice(0, 500)}`);
+          }
+        }
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      child.on("error", reject);
+      child.on("exit", (code) => {
+        console.log(`[pi-service] exited code=${code ?? 0} events=${events.length} stderr=${stderr.slice(0, 500)}`);
+        if (code && code !== 0) {
+          reject(new Error(`Pi RPC exited with code ${code}: ${stderr}`));
+          return;
+        }
+
+        resolve();
+      });
+    });
+
+    await Promise.all([...thoughtPromises, ...progressPromises]);
+
+    return events;
+  }
+}
+
+function buildPiArgs(env: Env): string[] {
+  const args = ["--mode", "json", "--print", "--no-session", "--offline"];
+
+  if (env.piProvider) {
+    args.push("--provider", env.piProvider);
+  }
+  if (env.piModel) {
+    args.push("--model", env.piModel);
+  }
+  if (env.piApiKey) {
+    args.push("--api-key", env.piApiKey);
+  }
+  if (env.piThinkingLevel) {
+    args.push("--thinking", env.piThinkingLevel);
+  }
+  if (env.piTools) {
+    args.push("--tools", env.piTools);
+  }
+
+  return args;
+}
+
+function buildActPrompt(run: Run, sandbox: SandboxSession): string {
+  return [
+    "Implement the approved plan for this Linear issue.",
+    `Run ID: ${run.id}`,
+    run.linearIssueId ? `Linear issue ID: ${run.linearIssueId}` : undefined,
+    `Repository branch: ${sandbox.branchName}`,
+    run.plan ? `Approved plan:\n${run.plan}` : undefined,
+    run.promptContext ? `Linear context:\n${run.promptContext}` : undefined,
+    "Make the code changes in this working tree and run the most relevant checks you can infer from the project.",
+    "Do not create, rename, switch, or push git branches. Stay on the provided repository branch; B-MOE will push the branch and open the pull request after you finish.",
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join("\n\n");
+}
+
+interface AgentEndEvent {
+  readonly type: "agent_end";
+  readonly messages: readonly unknown[];
+}
+
+interface MessageEndEvent {
+  readonly type: "message_end";
+  readonly message: unknown;
+}
+
+interface AssistantMessage {
+  readonly role: "assistant";
+  readonly content?: readonly unknown[];
+  readonly stopReason?: string;
+}
+
+interface ToolExecutionStartEvent {
+  readonly type: "tool_execution_start";
+}
+
+interface ToolExecutionEndEvent {
+  readonly type: "tool_execution_end";
+  readonly result?: unknown;
+  readonly message?: unknown;
+}
+
+function isAgentEndEvent(event: unknown): event is AgentEndEvent {
+  return isRecord(event) && event.type === "agent_end" && Array.isArray(event.messages);
+}
+
+function isMessageEndEvent(event: unknown): event is MessageEndEvent {
+  return isRecord(event) && event.type === "message_end" && "message" in event;
+}
+
+function summarizeEventTypes(events: readonly unknown[]): string {
+  if (events.length === 0) {
+    return "none";
+  }
+
+  return events.map((event) => isRecord(event) ? String(event.type ?? "unknown") : typeof event).join(",");
+}
+
+function isAssistantMessage(message: unknown): message is AssistantMessage {
+  return isRecord(message) && message.role === "assistant";
+}
+
+function isToolExecutionStartEvent(event: unknown): event is ToolExecutionStartEvent {
+  return isRecord(event) && event.type === "tool_execution_start";
+}
+
+function isToolExecutionEndEvent(event: unknown): event is ToolExecutionEndEvent {
+  return isRecord(event) && event.type === "tool_execution_end";
+}
+
+function extractText(message: AssistantMessage | undefined): string {
+  if (!message?.content) {
+    return "";
+  }
+
+  return message.content
+    .filter((content): content is { type: "text"; text: string } => {
+      return isRecord(content) && content.type === "text" && typeof content.text === "string";
+    })
+    .map((content) => content.text)
+    .join("");
+}
+
+function extractThinking(messages: readonly AssistantMessage[]): readonly string[] {
+  return messages.flatMap((message) => message.content ?? [])
+    .filter((content): content is { type: "thinking"; thinking: string } => {
+      return isRecord(content) && content.type === "thinking" && typeof content.thinking === "string";
+    })
+    .map((content) => content.thinking.trim())
+    .filter(Boolean);
+}
+
+function extractToolCallProgress(message: AssistantMessage): readonly string[] {
+  return (message.content ?? []).flatMap((content) => {
+    if (!isRecord(content) || content.type !== "toolCall" || typeof content.name !== "string") {
+      return [];
+    }
+
+    const command = isRecord(content.arguments) && typeof content.arguments.command === "string"
+      ? content.arguments.command.split("\n")[0]
+      : undefined;
+
+    if (content.name === "bash" && command) {
+      return [`Running \`${command.slice(0, 120)}\``];
+    }
+    if ((content.name === "read" || content.name === "write" || content.name === "edit") && isRecord(content.arguments) && typeof content.arguments.path === "string") {
+      return [`${capitalize(content.name)}ing \`${content.arguments.path}\``];
+    }
+
+    return [`Using ${content.name}`];
+  });
+}
+
+function summarizeToolResult(event: ToolExecutionEndEvent): string | undefined {
+  const text = JSON.stringify(event).slice(0, 1000);
+
+  if (/Found 0 warnings and 0 errors|\bpass\)/i.test(text)) {
+    return "Checks are passing so far.";
+  }
+  if (/Successfully wrote/i.test(text)) {
+    return "Updated files in the workspace.";
+  }
+  if (/\bcreate mode\b|\d+ files? changed/i.test(text)) {
+    return "Committed local changes.";
+  }
+
+  return undefined;
+}
+
+function capitalize(value: string): string {
+  return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

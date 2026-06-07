@@ -11,6 +11,8 @@ import { PlanningService, type PlanningClient } from "../services/planning.servi
 import { SandboxService, type SandboxClient } from "../services/sandbox.service";
 import { RepositoryService, type RepositoryClient } from "../services/repository.service";
 import { PiService, type PiClient } from "../services/pi.service";
+import { GitService, type GitClient } from "../services/git.service";
+import { GitHubService, type GitHubClient } from "../services/github.service";
 import { BullMqAgentRunQueue, type AgentRunQueue } from "../queue/queue";
 import { AgentRunWorker } from "../workers/agent-run.worker";
 import { RedisRunStore, type RunStore } from "../store/run.store";
@@ -29,6 +31,8 @@ export interface Cradle {
   readonly repositoryService: RepositoryClient;
   readonly sandboxService: SandboxClient;
   readonly piService: PiClient;
+  readonly gitService: GitClient;
+  readonly githubService: GitHubClient;
   readonly agentSessionTriggerService: AgentSessionTriggerService;
   readonly agentRunWorker: AgentRunWorker;
   readonly agentRunQueue: AgentRunQueue;
@@ -57,9 +61,19 @@ export function createDiContainer(env: Env = loadEnv()): AwilixContainer<Cradle>
       .singleton()
       .inject(() => ({ createModel: undefined, generateTextFn: generateText })),
     planningService: asClass(PlanningService).singleton(),
-    repositoryService: asClass(RepositoryService).singleton(),
+    repositoryService: asClass(RepositoryService)
+      .singleton()
+      .inject(() => ({ commandRunner: undefined, fileSystem: undefined })),
     sandboxService: asClass(SandboxService).singleton(),
-    piService: asClass(PiService).singleton(),
+    piService: asClass(PiService)
+      .singleton()
+      .inject(() => ({ rpcRunner: undefined })),
+    gitService: asClass(GitService)
+      .singleton()
+      .inject(() => ({ commandRunner: undefined })),
+    githubService: asClass(GitHubService)
+      .singleton()
+      .inject(() => ({ fetch: globalThis.fetch, now: () => Date.now(), signJwtFn: undefined })),
     linearOAuthService: asClass(LinearOAuthService)
       .singleton()
       .inject(() => ({

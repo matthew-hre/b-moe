@@ -82,7 +82,7 @@ export interface AgentSessionEventLike {
   action: string;
   agentSession: {
     id: string;
-    issue?: { id?: string } | null;
+    issue?: { id?: string; identifier?: string } | null;
     creator?: { url?: string; name?: string } | null;
   };
   promptContext?: string | null;
@@ -99,7 +99,7 @@ export function getAgentSessionTrigger(
   return {
     action: event.action,
     agentSessionId: event.agentSession.id,
-    linearIssueId: event.agentSession.issue?.id,
+    linearIssueId: event.agentSession.issue?.identifier ?? event.agentSession.issue?.id,
     requesterUrl: event.agentSession.creator?.url,
     requesterName: event.agentSession.creator?.name,
     promptContext: event.promptContext ?? undefined,

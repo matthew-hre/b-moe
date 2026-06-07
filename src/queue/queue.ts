@@ -26,8 +26,7 @@ export class BullMqAgentRunQueue implements AgentRunQueue {
       { runId },
       {
         jobId: runId,
-        attempts: 3,
-        backoff: { type: "exponential", delay: 5_000 },
+        attempts: 1,
         removeOnComplete: true,
         removeOnFail: 100,
       },

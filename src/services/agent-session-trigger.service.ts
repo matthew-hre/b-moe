@@ -114,6 +114,14 @@ export class AgentSessionTriggerService {
       return { ignored: true };
     }
 
+    if (run.state !== "awaiting_input") {
+      console.log(
+        `[agent-session-trigger] prompted webhook recorded but not enqueued; run id=${run.id} state=${run.state}`,
+      );
+      await this.runStore.saveRun({ ...run, latestPromptBody: trigger.promptBody });
+      return { run };
+    }
+
     const resumedRun = run.state === "awaiting_input" ? resumeRun(run) : run;
     const repositoryResolution = run.repositorySelectionQuestion
       ? this.repositoryService.resolve(trigger.promptBody)

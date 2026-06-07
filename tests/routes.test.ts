@@ -34,7 +34,7 @@ const noopAgentRunQueue: AgentRunQueue = {
 
 const repositoryService: RepositoryClient = {
   async getWorkspace(run) {
-    return { repoUrl: run.repoUrl ?? "https://github.com/acme/repo", path: `/tmp/${run.id}` };
+    return { repoUrl: run.repoUrl ?? "https://github.com/acme/repo", branchName: `b-moe/${run.linearIssueId ?? run.id}`, path: `/tmp/${run.id}` };
   },
   resolve(promptContext) {
     return {
@@ -74,7 +74,7 @@ function agentSessionCreated(agentSessionId: string, linearIssueId: string): str
     action: "created",
     agentSession: {
       id: agentSessionId,
-      issue: { id: linearIssueId },
+      issue: { id: `uuid-${linearIssueId}`, identifier: linearIssueId },
       creator: { name: "Matthew", url: "https://linear.app/acme/profiles/matthew" },
     },
     promptContext: "<issue><title>Do the thing</title><repoUrl>https://github.com/acme/repo</repoUrl><baseBranch>main</baseBranch></issue>",
@@ -402,7 +402,7 @@ describe("routes", () => {
     };
     const repositoryClient: RepositoryClient = {
       async getWorkspace(selectedRun) {
-        return { repoUrl: selectedRun.repoUrl ?? "https://github.com/acme/web", path: `/tmp/${selectedRun.id}` };
+        return { repoUrl: selectedRun.repoUrl ?? "https://github.com/acme/web", branchName: `b-moe/${selectedRun.linearIssueId ?? selectedRun.id}`, path: `/tmp/${selectedRun.id}` };
       },
       resolve(value) {
         return value?.toLowerCase().includes("frontend")

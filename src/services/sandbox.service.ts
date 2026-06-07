@@ -5,6 +5,7 @@ export interface SandboxSession {
   readonly id: string;
   readonly runId: string;
   readonly workingDirectory: string;
+  readonly branchName: string;
 }
 
 export interface SandboxClient {
@@ -30,6 +31,7 @@ export class SandboxService implements SandboxClient {
       id: `sandbox-${run.id}`,
       runId: run.id,
       workingDirectory: workspace.path,
+      branchName: workspace.branchName,
     };
   }
 
