@@ -11,7 +11,7 @@ export const EnvSchema = z
     GITHUB_TOKEN: optionalNonEmptyString,
     GITHUB_WEBHOOK_SECRET: optionalNonEmptyString,
     OPENROUTER_API_KEY: optionalNonEmptyString,
-    REDIS_HOST: optionalNonEmptyString,
+    REDIS_HOST: z.string().min(1),
     REDIS_PORT: z.coerce.number().int().positive().optional(),
     DOCKER_HOST: z.string().min(1).default("local"),
     REPO_BASE_PATH: optionalNonEmptyString,

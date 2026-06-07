@@ -3,10 +3,16 @@ import type { Env } from "../config/env";
 
 export type RedisClient = Redis;
 
-export function createRedisClient(env: Env): RedisClient | undefined {
+export class MissingRedisConfigError extends Error {
+  constructor() {
+    super("REDIS_HOST is required");
+    this.name = "MissingRedisConfigError";
+  }
+}
+
+export function createRedisClient(env: Env): RedisClient {
   if (!env.redisHost) {
-    console.log("[redis] REDIS_HOST is not set; using in-memory stores");
-    return undefined;
+    throw new MissingRedisConfigError();
   }
 
   console.log(`[redis] creating Redis client for ${env.redisHost}:${env.redisPort}`);

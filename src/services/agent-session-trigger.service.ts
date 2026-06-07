@@ -2,6 +2,7 @@ import type { Run } from "../models/run";
 import type { getAgentSessionTrigger } from "../models/linear";
 import type { LinearAgentClient } from "./linear.service";
 import type { RunStore } from "../store/run.store";
+import type { AgentRunQueue } from "../queue/queue";
 
 export interface AgentSessionTriggerResponse {
   readonly run?: Run;
@@ -11,15 +12,18 @@ export interface AgentSessionTriggerResponse {
 export interface AgentSessionTriggerServiceDependencies {
   readonly linearService: LinearAgentClient;
   readonly runStore: RunStore;
+  readonly agentRunQueue: AgentRunQueue;
 }
 
 export class AgentSessionTriggerService {
   private readonly linearService: LinearAgentClient;
   private readonly runStore: RunStore;
+  private readonly agentRunQueue: AgentRunQueue;
 
-  constructor({ linearService, runStore }: AgentSessionTriggerServiceDependencies) {
+  constructor({ linearService, runStore, agentRunQueue }: AgentSessionTriggerServiceDependencies) {
     this.linearService = linearService;
     this.runStore = runStore;
+    this.agentRunQueue = agentRunQueue;
   }
 
   async handle(
@@ -75,6 +79,9 @@ export class AgentSessionTriggerService {
     console.log(
       `[agent-session-trigger] emitted greeting thought for agentSessionId=${trigger.agentSessionId}`,
     );
+
+    await this.agentRunQueue.enqueueRun(run.id);
+    console.log(`[agent-session-trigger] enqueued run id=${run.id}`);
 
     return { run };
   }

@@ -32,7 +32,7 @@ describe("LinearOAuthService", () => {
     }) as typeof fetch;
 
     const viewerFetchCalls: Array<{ input: string; init?: RequestInit }> = [];
-    (globalThis.fetch as unknown) = async (input: unknown, init: unknown) => {
+    (globalThis.fetch as unknown) = async (input: unknown, init: RequestInit | undefined) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
       viewerFetchCalls.push({ input: url, init });
       return Response.json({
@@ -49,6 +49,7 @@ describe("LinearOAuthService", () => {
       env: loadEnv({
         LINEAR_CLIENT_ID: "client-id-1",
         LINEAR_CLIENT_SECRET: "client-secret-1",
+        REDIS_HOST: "localhost",
       }),
       linearInstallStore,
       fetch: mockTokenFetch,
@@ -94,7 +95,7 @@ describe("LinearOAuthService", () => {
 
   test("requires OAuth client configuration", async () => {
     const service = new LinearOAuthService({
-      env: loadEnv({}),
+      env: loadEnv({ REDIS_HOST: "localhost" }),
       linearInstallStore: new InMemoryLinearInstallStore(),
     });
 
@@ -111,6 +112,7 @@ describe("LinearOAuthService", () => {
       env: loadEnv({
         LINEAR_CLIENT_ID: "client-id-1",
         LINEAR_CLIENT_SECRET: "client-secret-1",
+        REDIS_HOST: "localhost",
       }),
       linearInstallStore: new InMemoryLinearInstallStore(),
       fetch: (async () => new Response(null, { status: 401 })) as unknown as typeof fetch,

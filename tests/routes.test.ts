@@ -7,6 +7,7 @@ import { loadEnv, type Env } from "../src/config/env";
 import type { LinearOAuthClient } from "../src/services/linear-oauth.service";
 import type { LinearAgentClient } from "../src/services/linear.service";
 import { AgentSessionTriggerService } from "../src/services/agent-session-trigger.service";
+import type { AgentRunQueue } from "../src/queue/queue";
 import { InMemoryRunStore } from "../src/store/run.store";
 import { InMemoryLinearInstallStore } from "../src/store/linear-install.store";
 
@@ -26,11 +27,16 @@ const noopLinearService: LinearAgentClient = {
   async addPullRequestUrl() {},
 };
 
+const noopAgentRunQueue: AgentRunQueue = {
+  async enqueueRun() {},
+};
+
 function createTestRoutes(
   runStore = new InMemoryRunStore({ createRunId: () => "run-1" }),
-  env: Env = loadEnv({}),
+  env: Env = loadEnv({ REDIS_HOST: "localhost" }),
   linearOAuthService = defaultLinearOAuthService,
   linearService: LinearAgentClient = noopLinearService,
+  agentRunQueue: AgentRunQueue = noopAgentRunQueue,
 ): ReturnType<typeof createRoutes> {
   const container = createContainer<Cradle>();
 
@@ -39,9 +45,10 @@ function createTestRoutes(
     redisClient: asValue(undefined),
     linearOAuthService: asValue(linearOAuthService),
     linearService: asValue(linearService),
+    agentRunQueue: asValue(agentRunQueue),
     runStore: asValue(runStore),
     linearInstallStore: asValue(new InMemoryLinearInstallStore()),
-    agentSessionTriggerService: asValue(new AgentSessionTriggerService({ linearService, runStore })),
+    agentSessionTriggerService: asValue(new AgentSessionTriggerService({ linearService, runStore, agentRunQueue })),
   });
 
   return createRoutes(container);
@@ -102,7 +109,7 @@ describe("routes", () => {
   test("redirects to Linear with actor=app for the authorize endpoint", async () => {
     const routes = createTestRoutes(
       new InMemoryRunStore({ createRunId: () => "run-1" }),
-      loadEnv({ LINEAR_CLIENT_ID: "client-id-1" }),
+      loadEnv({ LINEAR_CLIENT_ID: "client-id-1", REDIS_HOST: "localhost" }),
     );
 
     const response = await routes.fetch(
@@ -150,7 +157,7 @@ describe("routes", () => {
     };
     const routes = createTestRoutes(
       new InMemoryRunStore({ createRunId: () => "run-1" }),
-      loadEnv({}),
+      loadEnv({ REDIS_HOST: "localhost" }),
       linearOAuthService,
     );
 
@@ -206,13 +213,25 @@ describe("routes", () => {
       getCurrentDate: () => createdAt,
     });
     const emittedActivities: Array<{ sessionId: string; body: string | undefined; type: string }> = [];
+    const enqueuedRunIds: string[] = [];
     const linearService: LinearAgentClient = {
       async emitActivity(agentSessionId, content) {
         emittedActivities.push({ sessionId: agentSessionId, body: content.body, type: content.type });
       },
       async addPullRequestUrl() {},
     };
-    const routes = createTestRoutes(runStore, loadEnv({}), defaultLinearOAuthService, linearService);
+    const agentRunQueue: AgentRunQueue = {
+      async enqueueRun(runId) {
+        enqueuedRunIds.push(runId);
+      },
+    };
+    const routes = createTestRoutes(
+      runStore,
+      loadEnv({ REDIS_HOST: "localhost" }),
+      defaultLinearOAuthService,
+      linearService,
+      agentRunQueue,
+    );
 
     const response = await routes.fetch(
       new Request("http://localhost/webhook/linear", {
@@ -236,6 +255,7 @@ describe("routes", () => {
     expect(emittedActivities).toEqual([
       { sessionId: "session-1", type: "thought", body: "Hi, I'm B-MOE!" },
     ]);
+    expect(enqueuedRunIds).toEqual(["run-1"]);
   });
 
   test("is idempotent for redelivered created webhooks", async () => {
@@ -269,7 +289,7 @@ describe("routes", () => {
       },
       async addPullRequestUrl() {},
     };
-    const routes = createTestRoutes(runStore, loadEnv({}), defaultLinearOAuthService, linearService);
+    const routes = createTestRoutes(runStore, loadEnv({ REDIS_HOST: "localhost" }), defaultLinearOAuthService, linearService);
 
     const response = await routes.fetch(
       new Request("http://localhost/webhook/linear", {
@@ -336,7 +356,7 @@ describe("routes", () => {
   test("rejects webhooks with an invalid signature when a secret is configured", async () => {
     const routes = createTestRoutes(
       new InMemoryRunStore({ createRunId: () => "run-1" }),
-      loadEnv({ LINEAR_WEBHOOK_SECRET: "webhook-secret-1" }),
+      loadEnv({ LINEAR_WEBHOOK_SECRET: "webhook-secret-1", REDIS_HOST: "localhost" }),
     );
 
     const response = await routes.fetch(
@@ -355,7 +375,7 @@ describe("routes", () => {
     const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
     const routes = createTestRoutes(
       runStore,
-      loadEnv({ LINEAR_WEBHOOK_SECRET: "webhook-secret-1" }),
+      loadEnv({ LINEAR_WEBHOOK_SECRET: "webhook-secret-1", REDIS_HOST: "localhost" }),
     );
     const body = agentSessionCreated("session-1", "issue-1");
     const signature = createHmac("sha256", "webhook-secret-1").update(body).digest("hex");

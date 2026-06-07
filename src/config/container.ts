@@ -5,9 +5,9 @@ import { loadEnv, type Env } from "./env";
 import { LinearOAuthService, type LinearOAuthClient } from "../services/linear-oauth.service";
 import { LinearService, type LinearAgentClient } from "../services/linear.service";
 import { AgentSessionTriggerService } from "../services/agent-session-trigger.service";
+import { BullMqAgentRunQueue, type AgentRunQueue } from "../queue/queue";
 import { InMemoryRunStore, type RunStore } from "../store/run.store";
 import {
-  InMemoryLinearInstallStore,
   RedisLinearInstallStore,
   type LinearInstallStore,
 } from "../store/linear-install.store";
@@ -18,9 +18,10 @@ export interface Cradle {
   readonly linearOAuthService: LinearOAuthClient;
   readonly linearService: LinearAgentClient;
   readonly agentSessionTriggerService: AgentSessionTriggerService;
+  readonly agentRunQueue: AgentRunQueue;
   readonly runStore: RunStore;
   readonly linearInstallStore: LinearInstallStore;
-  readonly redisClient: RedisClient | undefined;
+  readonly redisClient: RedisClient;
 }
 
 // These classes take a single destructured options object that mixes container
@@ -33,12 +34,11 @@ export function createDiContainer(env: Env = loadEnv()): AwilixContainer<Cradle>
   container.register({
     env: asValue(env),
     redisClient: asFunction(({ env }) => createRedisClient(env)).singleton(),
-    linearInstallStore: asFunction(({ redisClient }) =>
-      redisClient ? new RedisLinearInstallStore(redisClient) : new InMemoryLinearInstallStore(),
-    ).singleton(),
+    linearInstallStore: asFunction(({ redisClient }) => new RedisLinearInstallStore(redisClient)).singleton(),
     runStore: asClass(InMemoryRunStore)
       .singleton()
       .inject(() => ({ createRunId: randomUUID, getCurrentDate: () => new Date() })),
+    agentRunQueue: asFunction(({ redisClient }) => new BullMqAgentRunQueue(redisClient)).singleton(),
     linearOAuthService: asClass(LinearOAuthService)
       .singleton()
       .inject(() => ({

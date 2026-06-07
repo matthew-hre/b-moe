@@ -16,12 +16,12 @@ async function storeWithInstall(): Promise<InMemoryLinearInstallStore> {
 function mockGraphQLFetch(
   handler: (url: string, init: RequestInit) => unknown,
 ): typeof fetch {
-  return async (input, init) => {
+  return (async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
     const result = handler(url, init as RequestInit);
     if (result instanceof Response) return result;
     return Response.json(result);
-  };
+  }) as typeof fetch;
 }
 
 describe("LinearService", () => {

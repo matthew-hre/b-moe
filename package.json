@@ -16,6 +16,7 @@
   "dependencies": {
     "@linear/sdk": "^86.0.0",
     "awilix": "latest",
+    "bullmq": "^5.78.0",
     "ioredis": "^5.11.1",
     "zod": "^4.4.3"
   },
