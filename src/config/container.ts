@@ -8,6 +8,9 @@ import { LinearService, type LinearAgentClient } from "../services/linear.servic
 import { LlmService, type LlmClient } from "../services/llm.service";
 import { AgentSessionTriggerService } from "../services/agent-session-trigger.service";
 import { PlanningService, type PlanningClient } from "../services/planning.service";
+import { SandboxService, type SandboxClient } from "../services/sandbox.service";
+import { RepositoryService, type RepositoryClient } from "../services/repository.service";
+import { PiService, type PiClient } from "../services/pi.service";
 import { BullMqAgentRunQueue, type AgentRunQueue } from "../queue/queue";
 import { AgentRunWorker } from "../workers/agent-run.worker";
 import { RedisRunStore, type RunStore } from "../store/run.store";
@@ -23,6 +26,9 @@ export interface Cradle {
   readonly linearService: LinearAgentClient;
   readonly llmService: LlmClient;
   readonly planningService: PlanningClient;
+  readonly repositoryService: RepositoryClient;
+  readonly sandboxService: SandboxClient;
+  readonly piService: PiClient;
   readonly agentSessionTriggerService: AgentSessionTriggerService;
   readonly agentRunWorker: AgentRunWorker;
   readonly agentRunQueue: AgentRunQueue;
@@ -51,6 +57,9 @@ export function createDiContainer(env: Env = loadEnv()): AwilixContainer<Cradle>
       .singleton()
       .inject(() => ({ createModel: undefined, generateTextFn: generateText })),
     planningService: asClass(PlanningService).singleton(),
+    repositoryService: asClass(RepositoryService).singleton(),
+    sandboxService: asClass(SandboxService).singleton(),
+    piService: asClass(PiService).singleton(),
     linearOAuthService: asClass(LinearOAuthService)
       .singleton()
       .inject(() => ({

@@ -27,6 +27,21 @@ describe("loadEnv", () => {
     expect(env.redisPort).toBe(6380);
   });
 
+  test("parses repository aliases", () => {
+    const env = loadEnv({
+      REDIS_HOST: "localhost",
+      REPOSITORIES_JSON: JSON.stringify({
+        frontend: "https://github.com/acme/web",
+        backend: { url: "https://github.com/acme/api", baseBranch: "main" },
+      }),
+    });
+
+    expect(env.repositories).toEqual({
+      frontend: "https://github.com/acme/web",
+      backend: { url: "https://github.com/acme/api", baseBranch: "main" },
+    });
+  });
+
   test("allows startup before the Linear app is configured", () => {
     const env = loadEnv({ REDIS_HOST: "localhost" });
 

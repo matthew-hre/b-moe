@@ -9,6 +9,9 @@ export interface CreateRunInput {
   readonly requesterUrl?: string;
   readonly requesterName?: string;
   readonly promptContext?: string;
+  readonly repoUrl?: string;
+  readonly baseBranch?: string;
+  readonly repositorySelectionQuestion?: string;
 }
 
 export interface RunStore {
@@ -124,6 +127,9 @@ export class RedisRunStore implements RunStore {
       requesterUrl: input.requesterUrl,
       requesterName: input.requesterName,
       promptContext: input.promptContext,
+      repoUrl: input.repoUrl,
+      baseBranch: input.baseBranch,
+      repositorySelectionQuestion: input.repositorySelectionQuestion,
       state: "queued",
       createdAt: now,
       updatedAt: now,
@@ -209,6 +215,9 @@ export class InMemoryRunStore implements RunStore {
       requesterUrl: input.requesterUrl,
       requesterName: input.requesterName,
       promptContext: input.promptContext,
+      repoUrl: input.repoUrl,
+      baseBranch: input.baseBranch,
+      repositorySelectionQuestion: input.repositorySelectionQuestion,
       state: "queued",
       createdAt: now,
       updatedAt: now,

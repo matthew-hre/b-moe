@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { AgentRunWorker, processAgentRun } from "../src/workers/agent-run.worker";
 import type { LinearAgentClient } from "../src/services/linear.service";
 import type { PlanningClient } from "../src/services/planning.service";
+import type { SandboxClient } from "../src/services/sandbox.service";
+import type { PiClient } from "../src/services/pi.service";
 import type { RedisClient } from "../src/store/redis";
 import { InMemoryRunStore } from "../src/store/run.store";
 
@@ -9,6 +11,17 @@ const fakeRedisClient = {} as RedisClient;
 const planningService: PlanningClient = {
   async createPlan() {
     return "Plan for Do the thing:\n1. Test plan";
+  },
+};
+const sandboxService: SandboxClient = {
+  async createSession(run) {
+    return { id: `sandbox-${run.id}`, runId: run.id, workingDirectory: `/tmp/${run.id}` };
+  },
+  async destroySession() {},
+};
+const piService: PiClient = {
+  async act({ run }) {
+    return { summary: `Pi acted on ${run.id}` };
   },
 };
 
@@ -22,6 +35,7 @@ describe("processAgentRun", () => {
       agentSessionId: "session-1",
       linearIssueId: "issue-1",
       requesterUrl: "https://linear.app/acme/profiles/matthew",
+      repoUrl: "https://github.com/acme/repo",
       promptContext: "<issue><title>Do the thing</title></issue>",
     });
     const emittedActivities: Array<{ sessionId: string; type: string; body: string | undefined }> = [];
@@ -35,6 +49,8 @@ describe("processAgentRun", () => {
     await processAgentRun(run.id, {
       linearService,
       planningService,
+      sandboxService,
+      piService,
       redisClient: fakeRedisClient,
       runStore,
     });
@@ -58,14 +74,14 @@ describe("processAgentRun", () => {
     ]);
   });
 
-  test("skips runs that are no longer queued", async () => {
+  test("continues refining runs into planning", async () => {
     const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
-    const run = await runStore.createRun({ agentSessionId: "session-1" });
+    const run = await runStore.createRun({ agentSessionId: "session-1", repoUrl: "https://github.com/acme/repo" });
     await runStore.transitionRun(run.id, "refining");
-    let emittedActivityCount = 0;
+    const emittedActivities: Array<{ type: string; body: string | undefined }> = [];
     const linearService: LinearAgentClient = {
-      async emitActivity() {
-        emittedActivityCount += 1;
+      async emitActivity(_agentSessionId, content) {
+        emittedActivities.push({ type: content.type, body: content.body });
       },
       async addPullRequestUrl() {},
     };
@@ -73,12 +89,52 @@ describe("processAgentRun", () => {
     await processAgentRun(run.id, {
       linearService,
       planningService,
+      sandboxService,
+      piService,
       redisClient: fakeRedisClient,
       runStore,
     });
 
-    expect((await runStore.getRun(run.id))?.state).toBe("refining");
-    expect(emittedActivityCount).toBe(0);
+    expect(await runStore.getRun(run.id)).toMatchObject({
+      state: "awaiting_input",
+      pausedFrom: "planning",
+      plan: "Plan for Do the thing:\n1. Test plan",
+    });
+    expect(emittedActivities).toEqual([
+      { type: "elicitation", body: "Plan for Do the thing:\n1. Test plan" },
+    ]);
+  });
+
+  test("asks for repository selection before refining", async () => {
+    const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
+    const run = await runStore.createRun({
+      agentSessionId: "session-1",
+      repositorySelectionQuestion: "Which repository should I use? Options: frontend, backend.",
+    });
+    const emittedActivities: Array<{ type: string; body: string | undefined }> = [];
+    const linearService: LinearAgentClient = {
+      async emitActivity(_agentSessionId, content) {
+        emittedActivities.push({ type: content.type, body: content.body });
+      },
+      async addPullRequestUrl() {},
+    };
+
+    await processAgentRun(run.id, {
+      linearService,
+      planningService,
+      sandboxService,
+      piService,
+      redisClient: fakeRedisClient,
+      runStore,
+    });
+
+    expect(await runStore.getRun(run.id)).toMatchObject({
+      state: "awaiting_input",
+      pausedFrom: "refining",
+    });
+    expect(emittedActivities).toEqual([
+      { type: "elicitation", body: "Which repository should I use? Options: frontend, backend." },
+    ]);
   });
 
   test("moves approved plans into acting", async () => {
@@ -98,6 +154,8 @@ describe("processAgentRun", () => {
     await processAgentRun(run.id, {
       linearService,
       planningService,
+      sandboxService,
+      piService,
       redisClient: fakeRedisClient,
       runStore,
     });
@@ -105,6 +163,8 @@ describe("processAgentRun", () => {
     expect(await runStore.getRun(run.id)).toMatchObject({ state: "acting" });
     expect(emittedActivities).toEqual([
       { type: "thought", body: "Plan approved. I’m moving into implementation." },
+      { type: "action", body: "Starting implementation in an isolated sandbox." },
+      { type: "response", body: "Pi acted on run-1" },
     ]);
   });
 
@@ -125,6 +185,8 @@ describe("processAgentRun", () => {
     await processAgentRun(run.id, {
       linearService,
       planningService,
+      sandboxService,
+      piService,
       redisClient: fakeRedisClient,
       runStore,
     });
@@ -152,6 +214,8 @@ describe("AgentRunWorker", () => {
     const worker = new AgentRunWorker({
       linearService,
       planningService,
+      sandboxService,
+      piService,
       redisClient: fakeRedisClient,
       runStore,
     });
@@ -159,5 +223,52 @@ describe("AgentRunWorker", () => {
     await worker.processJob({ data: { runId: run.id } });
 
     expect((await runStore.getRun(run.id))?.state).toBe("awaiting_input");
+  });
+
+  test("processes acting runs with sandbox and Pi", async () => {
+    const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
+    const run = await runStore.createRun({ agentSessionId: "session-1" });
+    await runStore.transitionRun(run.id, "refining");
+    await runStore.transitionRun(run.id, "planning");
+    await runStore.transitionRun(run.id, "acting");
+    const events: string[] = [];
+    const linearService: LinearAgentClient = {
+      async emitActivity(_agentSessionId, content) {
+        events.push(`${content.type}:${content.body}`);
+      },
+      async addPullRequestUrl() {},
+    };
+    const sandboxClient: SandboxClient = {
+      async createSession() {
+        events.push("sandbox:create");
+        return { id: "sandbox-1", runId: run.id, workingDirectory: "/tmp/run-1" };
+      },
+      async destroySession() {
+        events.push("sandbox:destroy");
+      },
+    };
+    const piClient: PiClient = {
+      async act() {
+        events.push("pi:act");
+        return { summary: "Done acting" };
+      },
+    };
+
+    await processAgentRun(run.id, {
+      linearService,
+      planningService,
+      sandboxService: sandboxClient,
+      piService: piClient,
+      redisClient: fakeRedisClient,
+      runStore,
+    });
+
+    expect(events).toEqual([
+      "action:Starting implementation in an isolated sandbox.",
+      "sandbox:create",
+      "pi:act",
+      "response:Done acting",
+      "sandbox:destroy",
+    ]);
   });
 });

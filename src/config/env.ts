@@ -1,6 +1,13 @@
 import { z } from "zod";
 
 const optionalNonEmptyString = z.string().min(1).optional();
+const RepositoryAliasesSchema = z.record(
+  z.string().min(1),
+  z.union([
+    z.url(),
+    z.object({ url: z.url(), baseBranch: z.string().min(1).optional() }).strict(),
+  ]),
+);
 
 export const EnvSchema = z
   .object({
@@ -16,6 +23,7 @@ export const EnvSchema = z
     REDIS_PORT: z.coerce.number().int().positive().optional(),
     DOCKER_HOST: z.string().min(1).default("local"),
     REPO_BASE_PATH: optionalNonEmptyString,
+    REPOSITORIES_JSON: optionalNonEmptyString,
     BOT_GITHUB_USERNAME: optionalNonEmptyString,
   })
   .transform((env) => ({
@@ -31,6 +39,7 @@ export const EnvSchema = z
     redisPort: env.REDIS_PORT ?? 6379,
     dockerHost: env.DOCKER_HOST,
     repoBasePath: env.REPO_BASE_PATH,
+    repositories: parseRepositories(env.REPOSITORIES_JSON),
     botGithubUsername: env.BOT_GITHUB_USERNAME,
   }));
 
@@ -39,4 +48,12 @@ export type EnvSource = Readonly<Record<string, string | undefined>>;
 
 export function loadEnv(source: EnvSource = process.env): Env {
   return EnvSchema.parse(source);
+}
+
+function parseRepositories(value: string | undefined): Record<string, string | { url: string; baseBranch?: string }> {
+  if (!value) {
+    return {};
+  }
+
+  return RepositoryAliasesSchema.parse(JSON.parse(value));
 }

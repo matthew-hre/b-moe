@@ -101,6 +101,8 @@ function runStoreContract(name: string, createStore: (now?: Date) => RunStore): 
         agentSessionId: "session-1",
         linearIssueId: "issue-1",
         promptContext: "<issue><title>Do the thing</title></issue>",
+        repoUrl: "https://github.com/acme/repo",
+        baseBranch: "main",
       });
 
       expect(run).toEqual({
@@ -108,6 +110,8 @@ function runStoreContract(name: string, createStore: (now?: Date) => RunStore): 
         agentSessionId: "session-1",
         linearIssueId: "issue-1",
         promptContext: "<issue><title>Do the thing</title></issue>",
+        repoUrl: "https://github.com/acme/repo",
+        baseBranch: "main",
         state: "queued",
         createdAt: now,
         updatedAt: now,

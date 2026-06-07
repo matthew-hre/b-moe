@@ -8,6 +8,7 @@ import type { LinearOAuthClient } from "../src/services/linear-oauth.service";
 import type { LinearAgentClient } from "../src/services/linear.service";
 import { AgentSessionTriggerService } from "../src/services/agent-session-trigger.service";
 import type { AgentRunQueue } from "../src/queue/queue";
+import type { RepositoryClient } from "../src/services/repository.service";
 import { InMemoryRunStore } from "../src/store/run.store";
 import { InMemoryLinearInstallStore } from "../src/store/linear-install.store";
 
@@ -31,6 +32,18 @@ const noopAgentRunQueue: AgentRunQueue = {
   async enqueueRun() {},
 };
 
+const repositoryService: RepositoryClient = {
+  async getWorkspace(run) {
+    return { repoUrl: run.repoUrl ?? "https://github.com/acme/repo", path: `/tmp/${run.id}` };
+  },
+  resolve(promptContext) {
+    return {
+      kind: "resolved",
+      repository: { url: "https://github.com/acme/repo", baseBranch: promptContext?.includes("main") ? "main" : undefined },
+    };
+  },
+};
+
 function createTestRoutes(
   runStore = new InMemoryRunStore({ createRunId: () => "run-1" }),
   env: Env = loadEnv({ REDIS_HOST: "localhost" }),
@@ -48,7 +61,8 @@ function createTestRoutes(
     agentRunQueue: asValue(agentRunQueue),
     runStore: asValue(runStore),
     linearInstallStore: asValue(new InMemoryLinearInstallStore()),
-    agentSessionTriggerService: asValue(new AgentSessionTriggerService({ linearService, runStore, agentRunQueue })),
+    repositoryService: asValue(repositoryService),
+    agentSessionTriggerService: asValue(new AgentSessionTriggerService({ linearService, runStore, agentRunQueue, repositoryService })),
   });
 
   return createRoutes(container);
@@ -63,7 +77,7 @@ function agentSessionCreated(agentSessionId: string, linearIssueId: string): str
       issue: { id: linearIssueId },
       creator: { name: "Matthew", url: "https://linear.app/acme/profiles/matthew" },
     },
-    promptContext: "<issue><title>Do the thing</title></issue>",
+    promptContext: "<issue><title>Do the thing</title><repoUrl>https://github.com/acme/repo</repoUrl><baseBranch>main</baseBranch></issue>",
   });
 }
 
@@ -252,7 +266,9 @@ describe("routes", () => {
         linearIssueId: "issue-1",
         requesterUrl: "https://linear.app/acme/profiles/matthew",
         requesterName: "Matthew",
-        promptContext: "<issue><title>Do the thing</title></issue>",
+        promptContext: "<issue><title>Do the thing</title><repoUrl>https://github.com/acme/repo</repoUrl><baseBranch>main</baseBranch></issue>",
+        repoUrl: "https://github.com/acme/repo",
+        baseBranch: "main",
         state: "queued",
         createdAt: createdAt.toISOString(),
         updatedAt: createdAt.toISOString(),
@@ -366,6 +382,70 @@ describe("routes", () => {
     expect(response.status).toBe(200);
     expect(emittedActivities).toEqual([
       { type: "response", body: "Approved — I’ll start implementation." },
+    ]);
+  });
+
+  test("resolves repository selection prompts from aliases", async () => {
+    const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
+    const run = await runStore.createRun({
+      agentSessionId: "session-1",
+      repositorySelectionQuestion: "Which repository should I use? Options: frontend, backend.",
+    });
+    await runStore.transitionRun(run.id, "refining");
+    await runStore.transitionRun(run.id, "awaiting_input");
+    const emittedActivities: Array<{ body: string | undefined; type: string }> = [];
+    const linearService: LinearAgentClient = {
+      async emitActivity(_agentSessionId, content) {
+        emittedActivities.push({ body: content.body, type: content.type });
+      },
+      async addPullRequestUrl() {},
+    };
+    const repositoryClient: RepositoryClient = {
+      async getWorkspace(selectedRun) {
+        return { repoUrl: selectedRun.repoUrl ?? "https://github.com/acme/web", path: `/tmp/${selectedRun.id}` };
+      },
+      resolve(value) {
+        return value?.toLowerCase().includes("frontend")
+          ? { kind: "resolved", repository: { url: "https://github.com/acme/web", baseBranch: "main" } }
+          : { kind: "needs_input", question: "Which repository should I use? Options: frontend, backend." };
+      },
+    };
+    const agentRunQueue: AgentRunQueue = { async enqueueRun() {} };
+    const container = createContainer<Cradle>();
+    container.register({
+      env: asValue(loadEnv({ REDIS_HOST: "localhost" })),
+      redisClient: asValue(undefined),
+      linearOAuthService: asValue(defaultLinearOAuthService),
+      linearService: asValue(linearService),
+      agentRunQueue: asValue(agentRunQueue),
+      runStore: asValue(runStore),
+      linearInstallStore: asValue(new InMemoryLinearInstallStore()),
+      repositoryService: asValue(repositoryClient),
+      agentSessionTriggerService: asValue(new AgentSessionTriggerService({ linearService, runStore, agentRunQueue, repositoryService: repositoryClient })),
+    });
+    const routes = createRoutes(container);
+
+    const response = await routes.fetch(
+      new Request("http://localhost/webhook/linear", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "AgentSessionEvent",
+          action: "prompted",
+          agentSession: { id: "session-1" },
+          agentActivity: { body: "frontend" },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await runStore.getRun(run.id)).toMatchObject({
+      state: "refining",
+      repoUrl: "https://github.com/acme/web",
+      baseBranch: "main",
+      repositorySelectionQuestion: undefined,
+    });
+    expect(emittedActivities).toEqual([
+      { type: "response", body: "Got it — I’ll use that repository." },
     ]);
   });
 
