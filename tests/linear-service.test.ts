@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { LinearNotInstalledError, LinearService } from "../src/services/linear.service";
 import { InMemoryLinearInstallStore } from "../src/store/linear-install.store";
 
@@ -13,17 +13,37 @@ async function storeWithInstall(): Promise<InMemoryLinearInstallStore> {
   return store;
 }
 
-describe("LinearService", () => {
-  test("emits an agent activity using the stored access token", async () => {
-    const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
-    const mockFetch: typeof fetch = async (input, init) => {
-      calls.push({ input, init });
+function mockGraphQLFetch(
+  handler: (url: string, init: RequestInit) => unknown,
+): typeof fetch {
+  return async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
+    const result = handler(url, init as RequestInit);
+    if (result instanceof Response) return result;
+    return Response.json(result);
+  };
+}
 
-      return Response.json({ data: { agentActivityCreate: { success: true } } });
-    };
+describe("LinearService", () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("emits an agent activity using the stored access token", async () => {
+    const calls: Array<{ input: string; init?: RequestInit }> = [];
+    globalThis.fetch = mockGraphQLFetch((url, init) => {
+      calls.push({ input: url, init });
+      return { data: { agentActivityCreate: { success: true } } };
+    });
+
     const service = new LinearService({
       linearInstallStore: await storeWithInstall(),
-      fetch: mockFetch,
     });
 
     await service.emitActivity("session-1", { type: "thought", body: "Looking into this" });
@@ -42,14 +62,13 @@ describe("LinearService", () => {
 
   test("adds a pull request url to the session", async () => {
     const calls: Array<{ init?: RequestInit }> = [];
-    const mockFetch: typeof fetch = async (_input, init) => {
+    globalThis.fetch = mockGraphQLFetch((_url, init) => {
       calls.push({ init });
+      return { data: { agentSessionUpdateExternalUrl: { success: true } } };
+    });
 
-      return Response.json({ data: { agentSessionUpdate: { success: true } } });
-    };
     const service = new LinearService({
       linearInstallStore: await storeWithInstall(),
-      fetch: mockFetch,
     });
 
     await service.addPullRequestUrl("session-1", {
@@ -71,21 +90,23 @@ describe("LinearService", () => {
   test("throws when the app is not installed", async () => {
     const service = new LinearService({
       linearInstallStore: new InMemoryLinearInstallStore(),
-      fetch: async () => Response.json({ data: {} }),
     });
 
-    await expect(
+    expect(
       service.emitActivity("session-1", { type: "thought", body: "hi" }),
     ).rejects.toThrow(LinearNotInstalledError);
   });
 
   test("surfaces GraphQL errors", async () => {
+    globalThis.fetch = mockGraphQLFetch(() => ({
+      errors: [{ message: "boom" }],
+    }));
+
     const service = new LinearService({
       linearInstallStore: await storeWithInstall(),
-      fetch: async () => Response.json({ errors: [{ message: "boom" }] }),
     });
 
-    await expect(
+    expect(
       service.emitActivity("session-1", { type: "thought", body: "hi" }),
     ).rejects.toThrow("boom");
   });

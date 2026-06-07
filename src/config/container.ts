@@ -1,20 +1,26 @@
 import { randomUUID } from "node:crypto";
-import { asClass, asValue, createContainer, type AwilixContainer } from "awilix";
+import { asClass, asFunction, asValue, createContainer, type AwilixContainer } from "awilix";
+import { LinearClient } from "@linear/sdk";
 import { loadEnv, type Env } from "./env";
 import { LinearOAuthService, type LinearOAuthClient } from "../services/linear-oauth.service";
 import { LinearService, type LinearAgentClient } from "../services/linear.service";
+import { AgentSessionTriggerService } from "../services/agent-session-trigger.service";
 import { InMemoryRunStore, type RunStore } from "../store/run.store";
 import {
   InMemoryLinearInstallStore,
+  RedisLinearInstallStore,
   type LinearInstallStore,
 } from "../store/linear-install.store";
+import { createRedisClient, type RedisClient } from "../store/redis";
 
 export interface Cradle {
   readonly env: Env;
   readonly linearOAuthService: LinearOAuthClient;
   readonly linearService: LinearAgentClient;
+  readonly agentSessionTriggerService: AgentSessionTriggerService;
   readonly runStore: RunStore;
   readonly linearInstallStore: LinearInstallStore;
+  readonly redisClient: RedisClient | undefined;
 }
 
 // These classes take a single destructured options object that mixes container
@@ -26,16 +32,25 @@ export function createDiContainer(env: Env = loadEnv()): AwilixContainer<Cradle>
 
   container.register({
     env: asValue(env),
-    linearInstallStore: asClass(InMemoryLinearInstallStore).singleton(),
+    redisClient: asFunction(({ env }) => createRedisClient(env)).singleton(),
+    linearInstallStore: asFunction(({ redisClient }) =>
+      redisClient ? new RedisLinearInstallStore(redisClient) : new InMemoryLinearInstallStore(),
+    ).singleton(),
     runStore: asClass(InMemoryRunStore)
       .singleton()
       .inject(() => ({ createRunId: randomUUID, getCurrentDate: () => new Date() })),
     linearOAuthService: asClass(LinearOAuthService)
       .singleton()
-      .inject(() => ({ fetch: globalThis.fetch })),
+      .inject(() => ({
+        fetch: globalThis.fetch,
+        createClient: (accessToken: string) => new LinearClient({ accessToken }),
+      })),
     linearService: asClass(LinearService)
       .singleton()
-      .inject(() => ({ fetch: globalThis.fetch })),
+      .inject(() => ({
+        createClient: (accessToken: string) => new LinearClient({ accessToken }),
+      })),
+    agentSessionTriggerService: asClass(AgentSessionTriggerService).singleton(),
   });
 
   return container;

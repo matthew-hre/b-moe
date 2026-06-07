@@ -1,7 +1,10 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac } from "node:crypto";
+import { LinearWebhookClient } from "@linear/sdk/webhooks";
 import type { AwilixContainer } from "awilix";
 import type { Cradle } from "../config/container";
 import { getAgentSessionTrigger, LinearWebhookEventSchema } from "../models/linear";
+import type { AgentSessionEventLike } from "../models/linear";
+import { AgentSessionTriggerService } from "../services/agent-session-trigger.service";
 import {
   LinearOAuthExchangeError,
   MissingLinearOAuthConfigError,
@@ -11,8 +14,6 @@ import { buildLinearOAuthAuthorizeUrl } from "../services/linear-oauth-url";
 interface Routes {
   fetch(request: Request): Promise<Response>;
 }
-
-const B_MOE_GREETING = "Hi, I'm B-MOE!";
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(body), {
@@ -24,34 +25,18 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
   });
 }
 
-// Verify the `linear-signature` HMAC over the raw request body. Returns true
-// when no secret is configured (e.g. local dev) so the app still works without
-// one, but enforces verification whenever a secret is set.
-function isValidLinearSignature(
-  rawBody: string,
-  signatureHeader: string | null,
-  secret: string | undefined,
-): boolean {
-  if (!secret) {
-    return true;
-  }
-
-  if (!signatureHeader) {
-    return false;
-  }
-
-  const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
-  const expectedBuffer = Buffer.from(expected, "hex");
-  const signatureBuffer = Buffer.from(signatureHeader, "hex");
-
-  if (expectedBuffer.length !== signatureBuffer.length) {
-    return false;
-  }
-
-  return timingSafeEqual(expectedBuffer, signatureBuffer);
+async function handleAgentSessionTrigger(
+  trigger: ReturnType<typeof getAgentSessionTrigger>,
+  service: AgentSessionTriggerService,
+): Promise<Response> {
+  const result = await service.handle(trigger);
+  return jsonResponse(result);
 }
 
 export function createRoutes(container: AwilixContainer<Cradle>): Routes {
+  const webhookSecret = container.cradle.env.linearWebhookSecret;
+  const webhookClient = webhookSecret ? new LinearWebhookClient(webhookSecret) : undefined;
+
   return {
     async fetch(request: Request) {
       const url = new URL(request.url);
@@ -62,7 +47,6 @@ export function createRoutes(container: AwilixContainer<Cradle>): Routes {
 
       if (url.pathname === "/runs" && request.method === "GET") {
         const runs = await container.cradle.runStore.listRuns();
-
         return jsonResponse({ runs });
       }
 
@@ -89,6 +73,7 @@ export function createRoutes(container: AwilixContainer<Cradle>): Routes {
       }
 
       if (url.pathname === "/oauth/linear/callback" && request.method === "GET") {
+        console.log("[routes] received Linear OAuth callback");
         const oauthError = url.searchParams.get("error");
 
         if (oauthError) {
@@ -136,22 +121,74 @@ export function createRoutes(container: AwilixContainer<Cradle>): Routes {
       }
 
       if (url.pathname === "/webhook/linear" && request.method === "POST") {
-        const rawBody = await request.text();
+        console.log("[routes] received Linear webhook");
 
-        if (
-          !isValidLinearSignature(
-            rawBody,
-            request.headers.get("linear-signature"),
-            container.cradle.env.linearWebhookSecret,
-          )
-        ) {
-          return jsonResponse({ error: "Invalid Linear webhook signature" }, { status: 401 });
+        if (webhookClient && webhookSecret) {
+          const rawBody = Buffer.from(await request.arrayBuffer());
+          const signature = request.headers.get("linear-signature");
+          const timestampHeader = request.headers.get("linear-timestamp");
+
+          console.log(
+            `[routes] webhook signature=${signature ? (signature.length > 12 ? signature.substring(0, 12) + "..." : signature) : "missing"} timestampHeader=${timestampHeader ?? "missing"} bodyLength=${rawBody.length}`,
+          );
+
+          if (!signature) {
+            console.log("[routes] webhook missing linear-signature header");
+            return jsonResponse({ error: "Missing Linear webhook signature" }, { status: 401 });
+          }
+
+          let payload: Record<string, unknown>;
+          try {
+            payload = JSON.parse(rawBody.toString()) as Record<string, unknown>;
+          } catch {
+            console.log("[routes] webhook body is not valid JSON");
+            return jsonResponse({ error: "Invalid JSON body" }, { status: 400 });
+          }
+
+          // Replicate the SDK's verification: sign the raw body and check the
+          // replay window against the body's webhookTimestamp, falling back to
+          // the linear-timestamp header. `verify` throws on a bad signature or
+          // a stale timestamp.
+          const timestamp =
+            (typeof payload.webhookTimestamp === "number" ? payload.webhookTimestamp : undefined) ??
+            timestampHeader ??
+            undefined;
+
+          try {
+            webhookClient.verify(rawBody, signature, timestamp);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const expected = createHmac("sha256", webhookSecret).update(rawBody).digest("hex");
+            console.log(
+              `[routes] webhook verification failed: ${message} (configured secretLength=${webhookSecret.length} expectedSignature=${expected.substring(0, 12)}... receivedSignature=${signature.substring(0, 12)}...)`,
+            );
+            return jsonResponse({ error: "Invalid Linear webhook signature" }, { status: 401 });
+          }
+
+          console.log(
+            `[routes] webhook verified; type=${payload.type ?? "unknown"} action=${payload.action ?? "none"}`,
+          );
+
+          if (payload.type !== "AgentSessionEvent") {
+            console.log(`[routes] webhook type=${payload.type ?? "unknown"} ignored`);
+            return jsonResponse({ ignored: true });
+          }
+
+          try {
+            const trigger = getAgentSessionTrigger(payload as unknown as AgentSessionEventLike);
+            return await handleAgentSessionTrigger(trigger, container.cradle.agentSessionTriggerService);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.log(`[routes] webhook processing failed: ${message}`);
+            return jsonResponse({ error: "Linear webhook processing failed" }, { status: 500 });
+          }
         }
 
+        const rawBody = Buffer.from(await request.arrayBuffer());
         let body: unknown;
 
         try {
-          body = JSON.parse(rawBody);
+          body = JSON.parse(rawBody.toString());
         } catch {
           return jsonResponse({ error: "Invalid JSON body" }, { status: 400 });
         }
@@ -159,50 +196,23 @@ export function createRoutes(container: AwilixContainer<Cradle>): Routes {
         const parseResult = LinearWebhookEventSchema.safeParse(body);
 
         if (!parseResult.success) {
+          console.log("[routes] invalid Linear webhook payload", parseResult.error.flatten());
           return jsonResponse({ error: "Invalid Linear webhook payload" }, { status: 400 });
         }
 
-        const trigger = getAgentSessionTrigger(parseResult.data);
+        console.log(
+          `[routes] Linear webhook parsed type=${parseResult.data.type} action=${"action" in parseResult.data ? parseResult.data.action : "none"}`,
+        );
 
-        if (!trigger) {
-          return jsonResponse({ ignored: true });
+        if (parseResult.data.type === "AgentSessionEvent") {
+          const trigger = getAgentSessionTrigger(
+            parseResult.data as unknown as AgentSessionEventLike,
+          );
+          return await handleAgentSessionTrigger(trigger, container.cradle.agentSessionTriggerService);
         }
 
-        const { linearService, runStore } = container.cradle;
-
-        if (trigger.action === "created") {
-          // Idempotent: Linear may redeliver a `created` event for the same session.
-          const existingRun = await runStore.getRunByAgentSession(trigger.agentSessionId);
-
-          if (existingRun) {
-            return jsonResponse({ run: existingRun });
-          }
-
-          const run = await runStore.createRun({
-            agentSessionId: trigger.agentSessionId,
-            linearIssueId: trigger.linearIssueId,
-          });
-          await linearService.emitActivity(trigger.agentSessionId, {
-            type: "thought",
-            body: B_MOE_GREETING,
-          });
-
-          return jsonResponse({ run });
-        }
-
-        // action === "prompted": a human replied into an existing session.
-        const run = await runStore.getRunByAgentSession(trigger.agentSessionId);
-
-        if (!run) {
-          return jsonResponse({ ignored: true });
-        }
-
-        await linearService.emitActivity(trigger.agentSessionId, {
-          type: "response",
-          body: B_MOE_GREETING,
-        });
-
-        return jsonResponse({ run });
+        console.log(`[routes] Linear webhook type=${parseResult.data.type} ignored`);
+        return jsonResponse({ ignored: true });
       }
 
       return new Response("Not Found", { status: 404 });

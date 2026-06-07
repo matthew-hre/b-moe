@@ -6,6 +6,7 @@ import type { Cradle } from "../src/config/container";
 import { loadEnv, type Env } from "../src/config/env";
 import type { LinearOAuthClient } from "../src/services/linear-oauth.service";
 import type { LinearAgentClient } from "../src/services/linear.service";
+import { AgentSessionTriggerService } from "../src/services/agent-session-trigger.service";
 import { InMemoryRunStore } from "../src/store/run.store";
 import { InMemoryLinearInstallStore } from "../src/store/linear-install.store";
 
@@ -35,10 +36,12 @@ function createTestRoutes(
 
   container.register({
     env: asValue(env),
+    redisClient: asValue(undefined),
     linearOAuthService: asValue(linearOAuthService),
     linearService: asValue(linearService),
     runStore: asValue(runStore),
     linearInstallStore: asValue(new InMemoryLinearInstallStore()),
+    agentSessionTriggerService: asValue(new AgentSessionTriggerService({ linearService, runStore })),
   });
 
   return createRoutes(container);

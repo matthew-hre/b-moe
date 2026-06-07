@@ -39,7 +39,7 @@ describe("run state machine", () => {
     ["awaiting_input", "planning"],
     ["awaiting_input", "acting"],
   ] satisfies Array<[RunState, RunState]>)
-    ("allows %s to %s", (currentState, nextState) => {
+    ("allows %s to %s", (currentState: RunState, nextState: RunState) => {
       expect(canTransitionRun(currentState, nextState)).toBe(true);
     });
 
@@ -50,7 +50,7 @@ describe("run state machine", () => {
     ["acting", "completed"],
     ["completed", "monitoring"],
   ] satisfies Array<[RunState, RunState]>)
-    ("rejects %s to %s", (currentState, nextState) => {
+    ("rejects %s to %s", (currentState: RunState, nextState: RunState) => {
       expect(canTransitionRun(currentState, nextState)).toBe(false);
       expect(() => transitionRun(createRun(currentState), nextState)).toThrow(
         InvalidRunStateTransitionError,

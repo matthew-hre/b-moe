@@ -1,3 +1,4 @@
+import { LinearClient } from "@linear/sdk";
 import { z } from "zod";
 import type { Env } from "../config/env";
 import type { LinearInstallStore } from "../store/linear-install.store";
@@ -10,18 +11,11 @@ const LinearTokenResponseSchema = z.object({
   refresh_token: z.string().min(1).optional(),
 });
 
-const LinearViewerResponseSchema = z.object({
-  data: z.object({
-    viewer: z.object({
-      id: z.string().min(1),
-    }),
-  }),
-});
-
 export interface LinearOAuthServiceDependencies {
   readonly env: Env;
   readonly linearInstallStore: LinearInstallStore;
-  readonly fetch?: typeof fetch;
+  readonly fetch?: typeof globalThis.fetch;
+  readonly createClient?: (accessToken: string) => LinearClient;
 }
 
 export interface InstallFromAuthorizationCodeInput {
@@ -58,21 +52,26 @@ export class LinearOAuthService implements LinearOAuthClient {
   private readonly env: Env;
   private readonly linearInstallStore: LinearInstallStore;
   private readonly fetch: typeof globalThis.fetch;
+  private readonly createClient: (accessToken: string) => LinearClient;
 
   constructor({
     env,
     linearInstallStore,
     fetch: fetchImplementation = globalThis.fetch,
+    createClient = (accessToken) => new LinearClient({ accessToken }),
   }: LinearOAuthServiceDependencies) {
     this.env = env;
     this.linearInstallStore = linearInstallStore;
     this.fetch = fetchImplementation;
+    this.createClient = createClient;
   }
 
   async installFromAuthorizationCode(
     input: InstallFromAuthorizationCodeInput,
   ): Promise<LinearOAuthInstall> {
     const config = this.getRequiredConfig();
+
+    console.log(`[linear-oauth] exchanging authorization code redirectUri=${input.redirectUri}`);
 
     const tokenResponse = await this.fetch("https://api.linear.app/oauth/token", {
       method: "POST",
@@ -89,37 +88,33 @@ export class LinearOAuthService implements LinearOAuthClient {
     });
 
     if (!tokenResponse.ok) {
+      console.log(`[linear-oauth] token exchange failed status=${tokenResponse.status}`);
       throw new LinearOAuthExchangeError("Linear OAuth token exchange failed");
     }
 
     const token = LinearTokenResponseSchema.parse(await tokenResponse.json());
-    const viewerResponse = await this.fetch("https://api.linear.app/graphql", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token.access_token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        query: "query Viewer { viewer { id } }",
-      }),
-    });
+    console.log(
+      `[linear-oauth] token exchange succeeded expiresIn=${token.expires_in} hasRefreshToken=${Boolean(token.refresh_token)} scope=${Array.isArray(token.scope) ? token.scope.join(" ") : token.scope}`,
+    );
 
-    if (!viewerResponse.ok) {
-      throw new LinearOAuthExchangeError("Linear viewer query failed");
-    }
+    const client = this.createClient(token.access_token);
+    const viewer = await client.viewer;
+    const appUserId = viewer.id;
 
-    const viewer = LinearViewerResponseSchema.parse(await viewerResponse.json());
+    console.log(`[linear-oauth] viewer query succeeded appUserId=${appUserId}`);
 
     await this.linearInstallStore.saveInstall({
-      appUserId: viewer.data.viewer.id,
+      appUserId,
       accessToken: token.access_token,
       scope: token.scope,
       expiresAt: new Date(Date.now() + token.expires_in * 1000),
       refreshToken: token.refresh_token,
     });
 
+    console.log(`[linear-oauth] install persisted appUserId=${appUserId}`);
+
     return {
-      linearAppUserId: viewer.data.viewer.id,
+      linearAppUserId: appUserId,
       expiresIn: token.expires_in,
       scope: token.scope,
       hasRefreshToken: Boolean(token.refresh_token),

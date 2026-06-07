@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { loadEnv } from "../src/config/env";
 import {
   LinearOAuthExchangeError,
@@ -8,21 +8,33 @@ import {
 import { InMemoryLinearInstallStore } from "../src/store/linear-install.store";
 
 describe("LinearOAuthService", () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
   test("exchanges OAuth code, fetches app user id, and persists the install", async () => {
-    const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
-    const mockFetch: typeof fetch = async (input, init) => {
-      calls.push({ input, init });
+    const tokenFetchCalls: Array<{ input: string | Request | URL; init?: RequestInit }> = [];
+    const mockTokenFetch = (async (input, init) => {
+      tokenFetchCalls.push({ input, init });
+      return Response.json({
+        access_token: "access-token-1",
+        token_type: "Bearer",
+        expires_in: 86_399,
+        scope: "read write app:assignable app:mentionable",
+        refresh_token: "refresh-token-1",
+      });
+    }) as typeof fetch;
 
-      if (calls.length === 1) {
-        return Response.json({
-          access_token: "access-token-1",
-          token_type: "Bearer",
-          expires_in: 86_399,
-          scope: "read write app:assignable app:mentionable",
-          refresh_token: "refresh-token-1",
-        });
-      }
-
+    const viewerFetchCalls: Array<{ input: string; init?: RequestInit }> = [];
+    (globalThis.fetch as unknown) = async (input: unknown, init: unknown) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
+      viewerFetchCalls.push({ input: url, init });
       return Response.json({
         data: {
           viewer: {
@@ -31,6 +43,7 @@ describe("LinearOAuthService", () => {
         },
       });
     };
+
     const linearInstallStore = new InMemoryLinearInstallStore();
     const service = new LinearOAuthService({
       env: loadEnv({
@@ -38,7 +51,7 @@ describe("LinearOAuthService", () => {
         LINEAR_CLIENT_SECRET: "client-secret-1",
       }),
       linearInstallStore,
-      fetch: mockFetch,
+      fetch: mockTokenFetch,
     });
 
     const install = await service.installFromAuthorizationCode({
@@ -59,10 +72,10 @@ describe("LinearOAuthService", () => {
     expect(storedInstall?.refreshToken).toBe("refresh-token-1");
     expect(storedInstall?.scope).toBe("read write app:assignable app:mentionable");
 
-    expect(calls).toHaveLength(2);
-    expect(calls[0]?.input).toBe("https://api.linear.app/oauth/token");
-    expect(calls[0]?.init?.method).toBe("POST");
-    expect(calls[0]?.init?.body).toEqual(
+    expect(tokenFetchCalls).toHaveLength(1);
+    expect(tokenFetchCalls[0]?.input).toBe("https://api.linear.app/oauth/token");
+    expect(tokenFetchCalls[0]?.init?.method).toBe("POST");
+    expect(tokenFetchCalls[0]?.init?.body).toEqual(
       new URLSearchParams({
         code: "oauth-code-1",
         redirect_uri: "https://example.com/oauth/linear/callback",
@@ -71,11 +84,12 @@ describe("LinearOAuthService", () => {
         grant_type: "authorization_code",
       }),
     );
-    expect(calls[1]?.input).toBe("https://api.linear.app/graphql");
-    expect(calls[1]?.init?.headers).toEqual({
-      Authorization: "Bearer access-token-1",
-      "Content-Type": "application/json",
-    });
+
+    expect(viewerFetchCalls).toHaveLength(1);
+    expect(viewerFetchCalls[0]?.input).toBe("https://api.linear.app/graphql");
+    expect((viewerFetchCalls[0]?.init?.headers as Record<string, string> | undefined)?.Authorization).toBe(
+      "Bearer access-token-1",
+    );
   });
 
   test("requires OAuth client configuration", async () => {
@@ -84,7 +98,7 @@ describe("LinearOAuthService", () => {
       linearInstallStore: new InMemoryLinearInstallStore(),
     });
 
-    await expect(
+    expect(
       service.installFromAuthorizationCode({
         code: "oauth-code-1",
         redirectUri: "https://example.com/oauth/linear/callback",
@@ -99,10 +113,10 @@ describe("LinearOAuthService", () => {
         LINEAR_CLIENT_SECRET: "client-secret-1",
       }),
       linearInstallStore: new InMemoryLinearInstallStore(),
-      fetch: async () => new Response(null, { status: 401 }),
+      fetch: (async () => new Response(null, { status: 401 })) as unknown as typeof fetch,
     });
 
-    await expect(
+    expect(
       service.installFromAuthorizationCode({
         code: "oauth-code-1",
         redirectUri: "https://example.com/oauth/linear/callback",

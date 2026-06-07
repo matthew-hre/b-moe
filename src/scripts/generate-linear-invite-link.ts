@@ -75,8 +75,16 @@ export function resolveRedirectUri(options: ScriptOptions, env: NodeJS.ProcessEn
   return getDefaultRedirectUri(env);
 }
 
+function writeOutput(message: string): void {
+  process.stdout.write(`${message}\n`);
+}
+
+function writeError(message: string): void {
+  process.stderr.write(`${message}\n`);
+}
+
 function printHelp(): void {
-  console.log(`Generate a Linear agent install URL.
+  writeOutput(`Generate a Linear agent install URL.
 
 Usage:
   bun run linear:invite [options]
@@ -106,7 +114,7 @@ export function main(args: readonly string[] = Bun.argv.slice(2), env: NodeJS.Pr
   const clientId = options.clientId ?? env.LINEAR_CLIENT_ID;
 
   if (!clientId) {
-    console.error("Missing LINEAR_CLIENT_ID. Set it in .env or pass --client-id <id>.");
+    writeError("Missing LINEAR_CLIENT_ID. Set it in .env or pass --client-id <id>.");
     return 1;
   }
 
@@ -118,13 +126,13 @@ export function main(args: readonly string[] = Bun.argv.slice(2), env: NodeJS.Pr
     promptConsent: options.promptConsent,
   });
 
-  console.log("Linear agent install URL:\n");
-  console.log(installUrl.toString());
-  console.log("\nInstall notes:");
-  console.log("- Open this URL as a Linear workspace admin.");
-  console.log(`- OAuth callback URL configured in Linear must be: ${redirectUri}`);
-  console.log(`- Requested scopes: ${LINEAR_AGENT_SCOPES}`);
-  console.log("- Actor: app");
+  writeOutput("Linear agent install URL:\n");
+  writeOutput(installUrl.toString());
+  writeOutput("\nInstall notes:");
+  writeOutput("- Open this URL as a Linear workspace admin.");
+  writeOutput(`- OAuth callback URL configured in Linear must be: ${redirectUri}`);
+  writeOutput(`- Requested scopes: ${LINEAR_AGENT_SCOPES}`);
+  writeOutput("- Actor: app");
 
   return 0;
 }

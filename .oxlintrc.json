@@ -5,7 +5,6 @@
   },
   "plugins": ["typescript", "import", "node", "promise"],
   "rules": {
-    "no-console": "warn",
     "curly": ["error", "multi-line"],
     "prefer-const": ["error", { "destructuring": "all" }],
     "prefer-destructuring": [

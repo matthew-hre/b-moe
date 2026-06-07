@@ -6,12 +6,17 @@
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
     "linear:invite": "bun run src/scripts/generate-linear-invite-link.ts",
+    "redis:up": "docker compose up -d redis",
+    "redis:down": "docker compose down",
+    "redis:logs": "docker compose logs -f redis",
     "lint": "oxlint",
     "test": "bun test",
     "format": "oxfmt --write src"
   },
   "dependencies": {
+    "@linear/sdk": "^86.0.0",
     "awilix": "latest",
+    "ioredis": "^5.11.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {

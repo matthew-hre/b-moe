@@ -58,8 +58,6 @@ export const LinearWebhookEventSchema = z.union([
 export type AgentSessionEventWebhook = Readonly<z.infer<typeof AgentSessionEventWebhookSchema>>;
 export type LinearWebhookEvent = Readonly<z.infer<typeof LinearWebhookEventSchema>>;
 
-// A normalized view of an AgentSessionEvent with the fields a run needs. A
-// `created` event starts a run; a `prompted` event resumes an existing one.
 export interface AgentSessionTrigger {
   readonly action: AgentSessionEventAction;
   readonly agentSessionId: string;
@@ -69,23 +67,26 @@ export interface AgentSessionTrigger {
   readonly stopRequested: boolean;
 }
 
-export function getAgentSessionTrigger(
-  event: LinearWebhookEvent,
-): AgentSessionTrigger | undefined {
-  const parseResult = AgentSessionEventWebhookSchema.safeParse(event);
+export interface AgentSessionEventLike {
+  action: string;
+  agentSession: { id: string; issue?: { id?: string } | null };
+  promptContext?: string | null;
+  agentActivity?: { content?: { body?: string } | null; body?: string; signal?: string } | null;
+}
 
-  if (!parseResult.success) {
+export function getAgentSessionTrigger(
+  event: AgentSessionEventLike,
+): AgentSessionTrigger | undefined {
+  if (event.action !== "created" && event.action !== "prompted") {
     return undefined;
   }
 
-  const sessionEvent = parseResult.data;
-
   return {
-    action: sessionEvent.action,
-    agentSessionId: sessionEvent.agentSession.id,
-    linearIssueId: sessionEvent.agentSession.issue?.id,
-    promptContext: sessionEvent.promptContext,
-    promptBody: sessionEvent.agentActivity?.body,
-    stopRequested: sessionEvent.agentActivity?.signal === "stop",
+    action: event.action,
+    agentSessionId: event.agentSession.id,
+    linearIssueId: event.agentSession.issue?.id,
+    promptContext: event.promptContext ?? undefined,
+    promptBody: event.agentActivity?.content?.body ?? event.agentActivity?.body,
+    stopRequested: event.agentActivity?.signal === "stop",
   };
 }

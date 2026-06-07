@@ -1,10 +1,6 @@
-import { z } from "zod";
+import { LinearClient } from "@linear/sdk";
 import type { LinearInstallStore } from "../store/linear-install.store";
 
-const LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql";
-
-// The agent activity types Linear accepts. `prompt` is user-generated and
-// cannot be emitted by an agent, so it is intentionally absent here.
 export type AgentActivityType = "thought" | "action" | "elicitation" | "response" | "error";
 
 export interface AgentActivityContent {
@@ -20,16 +16,9 @@ export interface SessionExternalUrl {
   readonly url: string;
 }
 
-const GraphQLResponseSchema = z.object({
-  data: z.unknown().optional(),
-  errors: z
-    .array(z.object({ message: z.string() }).loose())
-    .optional(),
-});
-
 export interface LinearServiceDependencies {
   readonly linearInstallStore: LinearInstallStore;
-  readonly fetch?: typeof fetch;
+  readonly createClient?: (accessToken: string) => LinearClient;
 }
 
 export interface LinearAgentClient {
@@ -53,65 +42,50 @@ export class LinearApiError extends Error {
 
 export class LinearService implements LinearAgentClient {
   private readonly linearInstallStore: LinearInstallStore;
-  private readonly fetch: typeof globalThis.fetch;
+  private readonly createClient: (accessToken: string) => LinearClient;
 
-  constructor({
-    linearInstallStore,
-    fetch: fetchImplementation = globalThis.fetch,
-  }: LinearServiceDependencies) {
+  constructor({ linearInstallStore, createClient = (accessToken) => new LinearClient({ accessToken }) }: LinearServiceDependencies) {
     this.linearInstallStore = linearInstallStore;
-    this.fetch = fetchImplementation;
+    this.createClient = createClient;
   }
 
   async emitActivity(agentSessionId: string, content: AgentActivityContent): Promise<void> {
-    await this.mutate(
-      `mutation AgentActivityCreate($input: AgentActivityCreateInput!) {
-        agentActivityCreate(input: $input) {
-          success
-        }
-      }`,
-      { input: { agentSessionId, content } },
-    );
+    console.log(`[linear-service] emitting activity type=${content.type} agentSessionId=${agentSessionId}`);
+    const client = await this.getClient();
+    const result = await client.createAgentActivity({
+      agentSessionId,
+      content,
+    });
+    if (!result.success) {
+      console.log(`[linear-service] agentActivityCreate returned success=false`);
+      throw new LinearApiError("agentActivityCreate returned success=false");
+    }
+    console.log(`[linear-service] emitted activity type=${content.type} agentSessionId=${agentSessionId}`);
   }
 
   async addPullRequestUrl(
     agentSessionId: string,
     pullRequest: SessionExternalUrl,
   ): Promise<void> {
-    await this.mutate(
-      `mutation AgentSessionUpdate($id: String!, $input: AgentSessionUpdateInput!) {
-        agentSessionUpdate(id: $id, input: $input) {
-          success
-        }
-      }`,
-      { id: agentSessionId, input: { addedExternalUrls: [pullRequest] } },
-    );
+    const client = await this.getClient();
+    const result = await client.agentSessionUpdateExternalUrl(agentSessionId, {
+      addedExternalUrls: [pullRequest],
+    });
+    if (!result.success) {
+      throw new LinearApiError("agentSessionUpdateExternalUrl returned success=false");
+    }
   }
 
-  private async mutate(query: string, variables: Record<string, unknown>): Promise<void> {
+  private async getClient(): Promise<LinearClient> {
     const install = await this.linearInstallStore.getInstall();
 
     if (!install) {
+      console.log("[linear-service] no Linear install available");
       throw new LinearNotInstalledError();
     }
 
-    const response = await this.fetch(LINEAR_GRAPHQL_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${install.accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ query, variables }),
-    });
+    console.log(`[linear-service] using install appUserId=${install.appUserId}`);
 
-    if (!response.ok) {
-      throw new LinearApiError(`Linear API request failed with status ${response.status}`);
-    }
-
-    const result = GraphQLResponseSchema.parse(await response.json());
-
-    if (result.errors && result.errors.length > 0) {
-      throw new LinearApiError(result.errors.map((error) => error.message).join("; "));
-    }
+    return this.createClient(install.accessToken);
   }
 }
