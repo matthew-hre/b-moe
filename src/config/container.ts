@@ -6,7 +6,7 @@ import { LinearOAuthService, type LinearOAuthClient } from "../services/linear-o
 import { LinearService, type LinearAgentClient } from "../services/linear.service";
 import { AgentSessionTriggerService } from "../services/agent-session-trigger.service";
 import { BullMqAgentRunQueue, type AgentRunQueue } from "../queue/queue";
-import { InMemoryRunStore, type RunStore } from "../store/run.store";
+import { RedisRunStore, type RunStore } from "../store/run.store";
 import {
   RedisLinearInstallStore,
   type LinearInstallStore,
@@ -35,7 +35,7 @@ export function createDiContainer(env: Env = loadEnv()): AwilixContainer<Cradle>
     env: asValue(env),
     redisClient: asFunction(({ env }) => createRedisClient(env)).singleton(),
     linearInstallStore: asFunction(({ redisClient }) => new RedisLinearInstallStore(redisClient)).singleton(),
-    runStore: asClass(InMemoryRunStore)
+    runStore: asClass(RedisRunStore)
       .singleton()
       .inject(() => ({ createRunId: randomUUID, getCurrentDate: () => new Date() })),
     agentRunQueue: asFunction(({ redisClient }) => new BullMqAgentRunQueue(redisClient)).singleton(),
