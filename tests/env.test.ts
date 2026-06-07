@@ -27,7 +27,7 @@ describe("loadEnv", () => {
     expect(env.redisPort).toBe(6380);
   });
 
-  test("loads Pi RPC configuration", () => {
+  test("loads Pi sandbox configuration", () => {
     const env = loadEnv({
       REDIS_HOST: "localhost",
       PI_COMMAND: "pi-dev",

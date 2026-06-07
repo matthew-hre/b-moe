@@ -1,8 +1,12 @@
-import { spawn } from "node:child_process";
-import { StringDecoder } from "node:string_decoder";
 import type { Run } from "../models/run";
 import type { Env } from "../config/env";
-import type { SandboxSession } from "./sandbox.service";
+import type { SandboxClient, SandboxSession } from "./sandbox.service";
+import {
+  buildPiArgs,
+  injectPiAgentConfig,
+  MissingPiCredentialsError,
+  resolvePiAgentConfig,
+} from "./pi-config";
 
 export interface PiActResult {
   readonly summary: string;
@@ -15,7 +19,7 @@ export interface PiClient {
 }
 
 export interface PiRpcRunInput {
-  readonly cwd: string;
+  readonly sandbox: SandboxSession;
   readonly prompt: string;
   readonly command: string;
   readonly args: readonly string[];
@@ -29,24 +33,35 @@ export interface PiRpcRunner {
 
 export interface PiServiceDependencies {
   readonly env: Env;
+  readonly sandboxService: SandboxClient;
   readonly rpcRunner?: PiRpcRunner;
 }
 
 export class PiService implements PiClient {
   private readonly env: Env;
+  private readonly sandboxService: SandboxClient;
   private readonly rpcRunner: PiRpcRunner;
 
-  constructor({ env, rpcRunner = new ChildProcessPiRpcRunner() }: PiServiceDependencies) {
+  constructor({ env, sandboxService, rpcRunner }: PiServiceDependencies) {
     this.env = env;
-    this.rpcRunner = rpcRunner;
+    this.sandboxService = sandboxService;
+    this.rpcRunner = rpcRunner ?? new SandboxPiRpcRunner(sandboxService);
   }
 
   async act({ run, sandbox, onThought, onProgress }: { run: Run; sandbox: SandboxSession; onThought?: (thought: string) => Promise<void>; onProgress?: (message: string) => Promise<void> }): Promise<PiActResult> {
+    const config = resolvePiAgentConfig(this.env);
+
+    if (!config) {
+      throw new MissingPiCredentialsError();
+    }
+
+    await injectPiAgentConfig(this.sandboxService, sandbox, config);
+
     const events = await this.rpcRunner.run({
-      cwd: sandbox.workingDirectory,
+      sandbox,
       prompt: buildActPrompt(run, sandbox),
       command: this.env.piCommand,
-      args: buildPiArgs(this.env),
+      args: buildPiArgs(config, this.env),
       onThought,
       onProgress,
     });
@@ -69,112 +84,115 @@ export class PiService implements PiClient {
   }
 }
 
-export class ChildProcessPiRpcRunner implements PiRpcRunner {
+export class SandboxPiRpcRunner implements PiRpcRunner {
+  constructor(private readonly sandboxService: SandboxClient) {}
+
   async run(input: PiRpcRunInput): Promise<readonly unknown[]> {
-    console.log(`[pi-service] spawning ${input.command} ${input.args.join(" ")} cwd=${input.cwd}`);
-    const child = spawn(input.command, [...input.args, input.prompt], {
-      cwd: input.cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const events: unknown[] = [];
-    const thoughtPromises: Promise<void>[] = [];
-    const progressPromises: Promise<void>[] = [];
-    let stderr = "";
-    const decoder = new StringDecoder("utf8");
-    let buffer = "";
+    console.log(
+      `[pi-service] exec ${sanitizePiExecLog(input.command, input.args)} containerId=${input.sandbox.containerId} cwd=${input.sandbox.workingDirectory}`,
+    );
+    const parser = createPiEventParser(input);
+    const result = await this.sandboxService.execStream(
+      input.sandbox,
+      [input.command, ...input.args, input.prompt],
+      {
+        onStdoutChunk: (chunk) => {
+          parser.consume(chunk);
+        },
+      },
+    );
 
-    child.stdout.on("data", (chunk: Buffer) => {
-      buffer += decoder.write(chunk);
-      for (;;) {
-        const newlineIndex = buffer.indexOf("\n");
-        if (newlineIndex === -1) {
-          break;
-        }
+    await parser.flush();
 
-        let line = buffer.slice(0, newlineIndex);
-        buffer = buffer.slice(newlineIndex + 1);
-        if (line.endsWith("\r")) {
-          line = line.slice(0, -1);
-        }
-        if (line.trim()) {
-          try {
-            const event = JSON.parse(line);
-            events.push(event);
-            if (isRecord(event)) {
-              console.log(`[pi-service] rpc event type=${String(event.type ?? "unknown")}`);
-              if (isMessageEndEvent(event) && isAssistantMessage(event.message)) {
-                for (const thought of extractThinking([event.message])) {
-                  const promise = input.onThought?.(thought);
-                  if (promise) {
-                    thoughtPromises.push(promise);
-                  }
-                }
-                for (const progress of extractToolCallProgress(event.message)) {
-                  const promise = input.onProgress?.(progress);
-                  if (promise) {
-                    progressPromises.push(promise);
-                  }
-                }
-              }
-              if (isToolExecutionEndEvent(event)) {
-                const progress = summarizeToolResult(event);
-                if (progress) {
-                  const promise = input.onProgress?.(progress);
-                  if (promise) {
-                    progressPromises.push(promise);
-                  }
-                }
-              }
-            }
-          } catch {
-            console.log(`[pi-service] non-json stdout: ${line.slice(0, 500)}`);
-          }
-        }
-      }
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-    });
+    console.log(
+      `[pi-service] container exec finished code=${result.exitCode} events=${parser.events.length} stderr=${result.stderr.slice(0, 500)}`,
+    );
 
-    await new Promise<void>((resolve, reject) => {
-      child.on("error", reject);
-      child.on("exit", (code) => {
-        console.log(`[pi-service] exited code=${code ?? 0} events=${events.length} stderr=${stderr.slice(0, 500)}`);
-        if (code && code !== 0) {
-          reject(new Error(`Pi RPC exited with code ${code}: ${stderr}`));
-          return;
-        }
+    if (result.exitCode !== 0) {
+      throw new Error(`Pi RPC exited with code ${result.exitCode}: ${result.stderr}`);
+    }
 
-        resolve();
-      });
-    });
-
-    await Promise.all([...thoughtPromises, ...progressPromises]);
-
-    return events;
+    return parser.events;
   }
 }
 
-function buildPiArgs(env: Env): string[] {
-  const args = ["--mode", "json", "--print", "--no-session", "--offline"];
+function createPiEventParser(input: Pick<PiRpcRunInput, "onThought" | "onProgress">) {
+  const events: unknown[] = [];
+  const thoughtPromises: Promise<void>[] = [];
+  const progressPromises: Promise<void>[] = [];
+  let buffer = "";
 
-  if (env.piProvider) {
-    args.push("--provider", env.piProvider);
-  }
-  if (env.piModel) {
-    args.push("--model", env.piModel);
-  }
-  if (env.piApiKey) {
-    args.push("--api-key", env.piApiKey);
-  }
-  if (env.piThinkingLevel) {
-    args.push("--thinking", env.piThinkingLevel);
-  }
-  if (env.piTools) {
-    args.push("--tools", env.piTools);
-  }
+  const consume = (chunk: string) => {
+    buffer += chunk;
+    for (;;) {
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex === -1) {
+        break;
+      }
 
-  return args;
+      let line = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
+      if (line.endsWith("\r")) {
+        line = line.slice(0, -1);
+      }
+      if (!line.trim()) {
+        continue;
+      }
+
+      try {
+        const event = JSON.parse(line);
+        events.push(event);
+        if (isRecord(event)) {
+          console.log(`[pi-service] rpc event type=${String(event.type ?? "unknown")}`);
+          if (isMessageEndEvent(event) && isAssistantMessage(event.message)) {
+            for (const thought of extractThinking([event.message])) {
+              const promise = input.onThought?.(thought);
+              if (promise) {
+                thoughtPromises.push(promise);
+              }
+            }
+            for (const progress of extractToolCallProgress(event.message)) {
+              const promise = input.onProgress?.(progress);
+              if (promise) {
+                progressPromises.push(promise);
+              }
+            }
+          }
+          if (isToolExecutionEndEvent(event)) {
+            const progress = summarizeToolResult(event);
+            if (progress) {
+              const promise = input.onProgress?.(progress);
+              if (promise) {
+                progressPromises.push(promise);
+              }
+            }
+          }
+        }
+      } catch {
+        console.log(`[pi-service] non-json stdout: ${line.slice(0, 500)}`);
+      }
+    }
+  };
+
+  return {
+    events,
+    consume,
+    async flush() {
+      await Promise.all([...thoughtPromises, ...progressPromises]);
+    },
+  };
+}
+
+function sanitizePiExecLog(command: string, args: readonly string[]): string {
+  const sanitizedArgs = args.flatMap((arg, index, all) => {
+    if (all[index - 1] === "--api-key") {
+      return ["--api-key", "***"];
+    }
+
+    return arg === "--api-key" ? [] : [arg];
+  });
+
+  return `${command} ${sanitizedArgs.join(" ")}`;
 }
 
 function buildActPrompt(run: Run, sandbox: SandboxSession): string {

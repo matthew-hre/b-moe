@@ -16,8 +16,21 @@ const planningService: PlanningClient = {
   },
 };
 const sandboxService: SandboxClient = {
-  async createSession(run) {
-    return { id: `sandbox-${run.id}`, runId: run.id, workingDirectory: `/tmp/${run.id}`, branchName: `b-moe/${run.linearIssueId ?? run.id}` };
+  startProvisioning() {},
+  async ensureSession(run) {
+    return {
+      id: `sandbox-${run.id}`,
+      runId: run.id,
+      containerId: `container-${run.id}`,
+      workingDirectory: "/workspace",
+      branchName: `b-moe/${run.linearIssueId ?? run.id}`,
+    };
+  },
+  async exec() {
+    return { stdout: "", stderr: "", exitCode: 0 };
+  },
+  async execStream() {
+    return { stdout: "", stderr: "", exitCode: 0 };
   },
   async destroySession() {},
 };
@@ -270,9 +283,22 @@ describe("AgentRunWorker", () => {
       async addPullRequestUrl() {},
     };
     const sandboxClient: SandboxClient = {
-      async createSession() {
-        events.push("sandbox:create");
-        return { id: "sandbox-1", runId: run.id, workingDirectory: "/tmp/run-1", branchName: "b-moe/issue-1" };
+      startProvisioning() {},
+      async ensureSession() {
+        events.push("sandbox:ensure");
+        return {
+          id: "sandbox-1",
+          runId: run.id,
+          containerId: "container-1",
+          workingDirectory: "/workspace",
+          branchName: "b-moe/issue-1",
+        };
+      },
+      async exec() {
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+      async execStream() {
+        return { stdout: "", stderr: "", exitCode: 0 };
       },
       async destroySession() {
         events.push("sandbox:destroy");
@@ -298,7 +324,7 @@ describe("AgentRunWorker", () => {
 
     expect(events).toEqual([
       "thought:Starting implementation in an isolated sandbox.",
-      "sandbox:create",
+      "sandbox:ensure",
       "pi:act",
       "thought:Committed any pending workspace changes.",
       "thought:Pushed branch `b-moe/issue-1`.",

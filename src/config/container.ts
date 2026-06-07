@@ -61,16 +61,14 @@ export function createDiContainer(env: Env = loadEnv()): AwilixContainer<Cradle>
       .singleton()
       .inject(() => ({ createModel: undefined, generateTextFn: generateText })),
     planningService: asClass(PlanningService).singleton(),
-    repositoryService: asClass(RepositoryService)
+    repositoryService: asClass(RepositoryService).singleton(),
+    sandboxService: asClass(SandboxService)
       .singleton()
-      .inject(() => ({ commandRunner: undefined, fileSystem: undefined })),
-    sandboxService: asClass(SandboxService).singleton(),
+      .inject(() => ({ dockerEngine: undefined })),
     piService: asClass(PiService)
       .singleton()
       .inject(() => ({ rpcRunner: undefined })),
-    gitService: asClass(GitService)
-      .singleton()
-      .inject(() => ({ commandRunner: undefined })),
+    gitService: asClass(GitService).singleton(),
     githubService: asClass(GitHubService)
       .singleton()
       .inject(() => ({ fetch: globalThis.fetch, now: () => Date.now(), signJwtFn: undefined })),

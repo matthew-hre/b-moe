@@ -79,6 +79,10 @@ export async function processAgentRun(
     return;
   }
 
+  if (!run.repositorySelectionQuestion) {
+    sandboxService.startProvisioning(run);
+  }
+
   if (run.state === "queued" && run.repositorySelectionQuestion) {
     await linearService.emitActivity(run.agentSessionId, {
       type: "elicitation",
@@ -170,7 +174,7 @@ async function processActing(
     body: "Starting implementation in an isolated sandbox.",
   });
 
-  const sandbox = await runStep(run.id, "create sandbox", () => sandboxService.createSession(run));
+  const sandbox = await runStep(run.id, "ensure sandbox", () => sandboxService.ensureSession(run));
 
   try {
     const result = await runStep(run.id, "run Pi", () => piService.act({
@@ -180,12 +184,12 @@ async function processActing(
       onProgress: (message: string) => linearService.emitActivity(run.agentSessionId, { type: "thought", body: message }),
     }));
     const gitSummary = await runStep(run.id, "describe git head", () => gitService.describeHead({
-      workingDirectory: sandbox.workingDirectory,
+      sandbox,
       baseBranch: run.baseBranch,
     }));
     console.log(`[agent-run-worker] git summary runId=${run.id}: ${gitSummary}`);
     await runStep(run.id, "commit pending changes", () => gitService.commitAll({
-      workingDirectory: sandbox.workingDirectory,
+      sandbox,
       message: run.linearIssueId ? `${run.linearIssueId}: B-MOE changes` : "B-MOE changes",
     }));
     await linearService.emitActivity(run.agentSessionId, {
@@ -193,7 +197,7 @@ async function processActing(
       body: "Committed any pending workspace changes.",
     });
     const hasChanges = await runStep(run.id, "check git changes", () => gitService.hasChanges({
-      workingDirectory: sandbox.workingDirectory,
+      sandbox,
       baseBranch: run.baseBranch,
     }));
 
@@ -206,7 +210,7 @@ async function processActing(
     }
 
     await runStep(run.id, "push branch", () => gitService.pushBranch({
-      workingDirectory: sandbox.workingDirectory,
+      sandbox,
       branchName: sandbox.branchName,
       repoUrl: run.repoUrl,
     }));

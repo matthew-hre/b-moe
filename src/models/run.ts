@@ -25,6 +25,21 @@ export const PullRequestInfoSchema = z
 
 export type PullRequestInfo = Readonly<z.infer<typeof PullRequestInfoSchema>>;
 
+export const RunSandboxStatusSchema = z.enum(["provisioning", "ready", "failed"]);
+export type RunSandboxStatus = z.infer<typeof RunSandboxStatusSchema>;
+
+export const RunSandboxSchema = z
+  .object({
+    containerId: z.string().min(1),
+    status: RunSandboxStatusSchema,
+    workspacePrepared: z.boolean().optional(),
+    branchName: z.string().min(1).optional(),
+    error: z.string().min(1).optional(),
+  })
+  .strict();
+
+export type RunSandbox = Readonly<z.infer<typeof RunSandboxSchema>>;
+
 export const RunSchema = z
   .object({
     id: z.string().min(1),
@@ -43,6 +58,7 @@ export const RunSchema = z
     createdAt: z.date(),
     updatedAt: z.date(),
     pullRequest: PullRequestInfoSchema.optional(),
+    sandbox: RunSandboxSchema.optional(),
     completedAt: z.date().optional(),
   })
   .strict();

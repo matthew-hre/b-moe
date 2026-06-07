@@ -1,102 +1,101 @@
-import { spawnSync } from "node:child_process";
-import { BunCommandRunner, createAuthenticatedGitHubUrl, getProcessEnv, type CommandRunner, type CommandRunnerOptions } from "./repository.service";
+import type { Env } from "../config/env";
+import { createAuthenticatedGitHubUrl } from "./repository.service";
 import type { GitHubClient } from "./github.service";
+import { resolveSandboxGitIdentity, type SandboxClient, type SandboxSession } from "./sandbox.service";
 
 export interface GitClient {
-  hasChanges(workingDirectory: string): Promise<boolean>;
-  hasChanges(input: { workingDirectory: string; baseBranch?: string }): Promise<boolean>;
-  describeHead(input: { workingDirectory: string; baseBranch?: string }): Promise<string>;
-  commitAll(input: { workingDirectory: string; message: string }): Promise<void>;
-  pushBranch(input: { workingDirectory: string; branchName: string; repoUrl?: string }): Promise<void>;
+  hasChanges(input: { sandbox: SandboxSession; baseBranch?: string }): Promise<boolean>;
+  describeHead(input: { sandbox: SandboxSession; baseBranch?: string }): Promise<string>;
+  commitAll(input: { sandbox: SandboxSession; message: string }): Promise<void>;
+  pushBranch(input: { sandbox: SandboxSession; branchName: string; repoUrl?: string }): Promise<void>;
 }
 
 export interface GitServiceDependencies {
+  readonly env: Env;
+  readonly sandboxService: SandboxClient;
   readonly githubService?: GitHubClient;
-  readonly commandRunner?: CommandRunnerWithOutput;
-}
-
-export interface CommandRunnerWithOutput extends CommandRunner {
-  runForOutput(command: readonly string[], options?: CommandRunnerOptions): Promise<string>;
-}
-
-export class BunGitCommandRunner extends BunCommandRunner implements CommandRunnerWithOutput {
-  async runForOutput(command: readonly string[], options: CommandRunnerOptions = {}): Promise<string> {
-    console.log(`[command-runner] running ${command.join(" ")} cwd=${options.cwd ?? process.cwd()}`);
-    const [program, ...args] = command;
-    const result = spawnSync(program, args, {
-      cwd: options.cwd,
-      env: options.env ? { ...getProcessEnv(), ...options.env } : getProcessEnv(),
-      encoding: "utf8",
-    });
-
-    if (result.error || result.status !== 0) {
-      throw new Error(
-        `Command failed (${command.join(" ")}): ${result.error?.message ?? (result.stderr || result.stdout)}`,
-      );
-    }
-
-    return result.stdout;
-  }
 }
 
 export class GitService implements GitClient {
+  private readonly env: Env;
+  private readonly sandboxService: SandboxClient;
   private readonly githubService?: GitHubClient;
-  private readonly commandRunner: CommandRunnerWithOutput;
 
-  constructor({ githubService, commandRunner = new BunGitCommandRunner() }: GitServiceDependencies = {}) {
+  constructor({ env, sandboxService, githubService }: GitServiceDependencies) {
+    this.env = env;
+    this.sandboxService = sandboxService;
     this.githubService = githubService;
-    this.commandRunner = commandRunner;
   }
 
-  async hasChanges(input: string | { workingDirectory: string; baseBranch?: string }): Promise<boolean> {
-    const workingDirectory = typeof input === "string" ? input : input.workingDirectory;
-    const baseBranch = typeof input === "string" ? undefined : input.baseBranch;
-    const status = await this.commandRunner.runForOutput(["git", "status", "--porcelain"], {
-      cwd: workingDirectory,
-    });
+  async hasChanges({ sandbox, baseBranch }: { sandbox: SandboxSession; baseBranch?: string }): Promise<boolean> {
+    const status = await this.runForOutput(sandbox, ["git", "status", "--porcelain"]);
 
     if (status.trim().length > 0) {
       return true;
     }
 
-    const head = await this.commandRunner.runForOutput(["git", "rev-parse", "HEAD"], { cwd: workingDirectory });
-    const upstream = await this.commandRunner.runForOutput(["git", "rev-parse", "@{upstream}"], { cwd: workingDirectory }).catch(() => "");
+    const head = await this.runForOutput(sandbox, ["git", "rev-parse", "HEAD"]);
+    const upstream = await this.runForOutput(sandbox, ["git", "rev-parse", "@{upstream}"]).catch(() => "");
 
     if (upstream.trim()) {
       return head.trim() !== upstream.trim();
     }
 
-    const base = await this.commandRunner.runForOutput(["git", "rev-parse", baseBranch ?? "main"], { cwd: workingDirectory }).catch(() => "");
+    const base = await this.runForOutput(sandbox, ["git", "rev-parse", baseBranch ?? "main"]).catch(() => "");
 
     return Boolean(base.trim()) && head.trim() !== base.trim();
   }
 
-  async pushBranch({ workingDirectory, branchName, repoUrl }: { workingDirectory: string; branchName: string; repoUrl?: string }): Promise<void> {
+  async pushBranch({ sandbox, branchName, repoUrl }: { sandbox: SandboxSession; branchName: string; repoUrl?: string }): Promise<void> {
     const remote = await this.createRemote(repoUrl);
 
-    await this.commandRunner.run(["git", "push", "--set-upstream", remote, `HEAD:refs/heads/${branchName}`, "--force"], {
-      cwd: workingDirectory,
-    });
+    await this.run(sandbox, ["git", "push", "--set-upstream", remote, `HEAD:refs/heads/${branchName}`, "--force"]);
   }
 
-  async commitAll({ workingDirectory, message }: { workingDirectory: string; message: string }): Promise<void> {
-    const status = await this.commandRunner.runForOutput(["git", "status", "--porcelain"], { cwd: workingDirectory });
+  async commitAll({ sandbox, message }: { sandbox: SandboxSession; message: string }): Promise<void> {
+    const status = await this.runForOutput(sandbox, ["git", "status", "--porcelain"]);
 
     if (!status.trim()) {
       return;
     }
 
-    await this.commandRunner.run(["git", "add", "--all"], { cwd: workingDirectory });
-    await this.commandRunner.run(["git", "commit", "-m", message], { cwd: workingDirectory });
+    await this.ensureGitIdentity(sandbox);
+    await this.run(sandbox, ["git", "add", "--all"]);
+    await this.run(sandbox, ["git", "commit", "-m", message]);
   }
 
-  async describeHead({ workingDirectory, baseBranch = "main" }: { workingDirectory: string; baseBranch?: string }): Promise<string> {
-    const branch = await this.commandRunner.runForOutput(["git", "branch", "--show-current"], { cwd: workingDirectory }).catch((error) => `branch error: ${error instanceof Error ? error.message : String(error)}`);
-    const status = await this.commandRunner.runForOutput(["git", "status", "--porcelain"], { cwd: workingDirectory }).catch((error) => `status error: ${error instanceof Error ? error.message : String(error)}`);
-    const log = await this.commandRunner.runForOutput(["git", "log", "--oneline", "--decorate", "-5"], { cwd: workingDirectory }).catch((error) => `log error: ${error instanceof Error ? error.message : String(error)}`);
-    const diff = await this.commandRunner.runForOutput(["git", "log", "--oneline", `${baseBranch}..HEAD`], { cwd: workingDirectory }).catch((error) => `diff error: ${error instanceof Error ? error.message : String(error)}`);
+  async describeHead({ sandbox, baseBranch = "main" }: { sandbox: SandboxSession; baseBranch?: string }): Promise<string> {
+    const branch = await this.runForOutput(sandbox, ["git", "branch", "--show-current"]).catch((error) => `branch error: ${error instanceof Error ? error.message : String(error)}`);
+    const status = await this.runForOutput(sandbox, ["git", "status", "--porcelain"]).catch((error) => `status error: ${error instanceof Error ? error.message : String(error)}`);
+    const log = await this.runForOutput(sandbox, ["git", "log", "--oneline", "--decorate", "-5"]).catch((error) => `log error: ${error instanceof Error ? error.message : String(error)}`);
+    const diff = await this.runForOutput(sandbox, ["git", "log", "--oneline", `${baseBranch}..HEAD`]).catch((error) => `diff error: ${error instanceof Error ? error.message : String(error)}`);
 
     return [`branch=${branch.trim()}`, `status=${status.trim() || "clean"}`, `${baseBranch}..HEAD=${diff.trim() || "empty"}`, `recent=${log.trim()}`].join(" | ");
+  }
+
+  private async run(sandbox: SandboxSession, command: readonly string[]): Promise<void> {
+    const result = await this.sandboxService.exec(sandbox, command);
+
+    if (result.exitCode !== 0) {
+      throw new Error(`Command failed (${command.join(" ")}): ${result.stderr || result.stdout}`);
+    }
+  }
+
+  private async runForOutput(sandbox: SandboxSession, command: readonly string[]): Promise<string> {
+    const result = await this.sandboxService.exec(sandbox, command);
+
+    if (result.exitCode !== 0) {
+      throw new Error(`Command failed (${command.join(" ")}): ${result.stderr || result.stdout}`);
+    }
+
+    return result.stdout;
+  }
+
+  private async ensureGitIdentity(sandbox: SandboxSession): Promise<void> {
+    const { name, email } = resolveSandboxGitIdentity(this.env);
+
+    await this.run(sandbox, ["git", "config", "user.name", name]);
+    await this.run(sandbox, ["git", "config", "user.email", email]);
   }
 
   private async createRemote(repoUrl: string | undefined): Promise<string> {

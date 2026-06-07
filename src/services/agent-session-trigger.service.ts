@@ -5,6 +5,7 @@ import type { RunStore } from "../store/run.store";
 import type { AgentRunQueue } from "../queue/queue";
 import { isPlanApproval } from "../workers/agent-run.worker";
 import type { RepositoryClient } from "./repository.service";
+import type { SandboxClient } from "./sandbox.service";
 
 export interface AgentSessionTriggerResponse {
   readonly run?: Run;
@@ -16,6 +17,7 @@ export interface AgentSessionTriggerServiceDependencies {
   readonly runStore: RunStore;
   readonly agentRunQueue: AgentRunQueue;
   readonly repositoryService: RepositoryClient;
+  readonly sandboxService: SandboxClient;
 }
 
 export class AgentSessionTriggerService {
@@ -23,12 +25,14 @@ export class AgentSessionTriggerService {
   private readonly runStore: RunStore;
   private readonly agentRunQueue: AgentRunQueue;
   private readonly repositoryService: RepositoryClient;
+  private readonly sandboxService: SandboxClient;
 
-  constructor({ linearService, runStore, agentRunQueue, repositoryService }: AgentSessionTriggerServiceDependencies) {
+  constructor({ linearService, runStore, agentRunQueue, repositoryService, sandboxService }: AgentSessionTriggerServiceDependencies) {
     this.linearService = linearService;
     this.runStore = runStore;
     this.agentRunQueue = agentRunQueue;
     this.repositoryService = repositoryService;
+    this.sandboxService = sandboxService;
   }
 
   async handle(
@@ -92,6 +96,7 @@ export class AgentSessionTriggerService {
       `[agent-session-trigger] emitted greeting thought for agentSessionId=${trigger.agentSessionId}`,
     );
 
+    this.sandboxService.startProvisioning(run);
     await this.agentRunQueue.enqueueRun(run.id);
     console.log(`[agent-session-trigger] enqueued run id=${run.id}`);
 
@@ -149,6 +154,10 @@ export class AgentSessionTriggerService {
     console.log(
       `[agent-session-trigger] emitted greeting response for agentSessionId=${trigger.agentSessionId}`,
     );
+
+    if (!updatedRun.repositorySelectionQuestion) {
+      this.sandboxService.startProvisioning(updatedRun);
+    }
 
     await this.agentRunQueue.enqueueRun(updatedRun.id);
     console.log(`[agent-session-trigger] enqueued prompted run id=${updatedRun.id}`);

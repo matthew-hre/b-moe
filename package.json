@@ -9,6 +9,7 @@
     "redis:up": "docker compose up -d redis",
     "redis:down": "docker compose down",
     "redis:logs": "docker compose logs -f redis",
+    "sandbox:build": "docker build -t b-moe/sandbox:latest docker/sandbox",
     "lint": "oxlint",
     "test": "bun test",
     "format": "oxfmt --write src"
@@ -19,11 +20,13 @@
     "ai": "^6.0.197",
     "awilix": "latest",
     "bullmq": "^5.78.0",
+    "dockerode": "^5.0.0",
     "ioredis": "^5.11.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/dockerode": "^4.0.1",
     "typescript": "latest"
   }
 }

@@ -9,6 +9,7 @@ import type { LinearAgentClient } from "../src/services/linear.service";
 import { AgentSessionTriggerService } from "../src/services/agent-session-trigger.service";
 import type { AgentRunQueue } from "../src/queue/queue";
 import type { RepositoryClient } from "../src/services/repository.service";
+import type { SandboxClient } from "../src/services/sandbox.service";
 import { InMemoryRunStore } from "../src/store/run.store";
 import { InMemoryLinearInstallStore } from "../src/store/linear-install.store";
 
@@ -33,15 +34,32 @@ const noopAgentRunQueue: AgentRunQueue = {
 };
 
 const repositoryService: RepositoryClient = {
-  async getWorkspace(run) {
-    return { repoUrl: run.repoUrl ?? "https://github.com/acme/repo", branchName: `b-moe/${run.linearIssueId ?? run.id}`, path: `/tmp/${run.id}` };
-  },
   resolve(promptContext) {
     return {
       kind: "resolved",
       repository: { url: "https://github.com/acme/repo", baseBranch: promptContext?.includes("main") ? "main" : undefined },
     };
   },
+};
+
+const sandboxService: SandboxClient = {
+  startProvisioning() {},
+  async ensureSession(run) {
+    return {
+      id: `sandbox-${run.id}`,
+      runId: run.id,
+      containerId: `container-${run.id}`,
+      workingDirectory: "/workspace",
+      branchName: `b-moe/${run.linearIssueId ?? run.id}`,
+    };
+  },
+  async exec() {
+    return { stdout: "", stderr: "", exitCode: 0 };
+  },
+  async execStream() {
+    return { stdout: "", stderr: "", exitCode: 0 };
+  },
+  async destroySession() {},
 };
 
 function createTestRoutes(
@@ -62,7 +80,7 @@ function createTestRoutes(
     runStore: asValue(runStore),
     linearInstallStore: asValue(new InMemoryLinearInstallStore()),
     repositoryService: asValue(repositoryService),
-    agentSessionTriggerService: asValue(new AgentSessionTriggerService({ linearService, runStore, agentRunQueue, repositoryService })),
+    agentSessionTriggerService: asValue(new AgentSessionTriggerService({ linearService, runStore, agentRunQueue, repositoryService, sandboxService })),
   });
 
   return createRoutes(container);
@@ -401,9 +419,6 @@ describe("routes", () => {
       async addPullRequestUrl() {},
     };
     const repositoryClient: RepositoryClient = {
-      async getWorkspace(selectedRun) {
-        return { repoUrl: selectedRun.repoUrl ?? "https://github.com/acme/web", branchName: `b-moe/${selectedRun.linearIssueId ?? selectedRun.id}`, path: `/tmp/${selectedRun.id}` };
-      },
       resolve(value) {
         return value?.toLowerCase().includes("frontend")
           ? { kind: "resolved", repository: { url: "https://github.com/acme/web", baseBranch: "main" } }
@@ -421,7 +436,7 @@ describe("routes", () => {
       runStore: asValue(runStore),
       linearInstallStore: asValue(new InMemoryLinearInstallStore()),
       repositoryService: asValue(repositoryClient),
-      agentSessionTriggerService: asValue(new AgentSessionTriggerService({ linearService, runStore, agentRunQueue, repositoryService: repositoryClient })),
+      agentSessionTriggerService: asValue(new AgentSessionTriggerService({ linearService, runStore, agentRunQueue, repositoryService: repositoryClient, sandboxService })),
     });
     const routes = createRoutes(container);
 

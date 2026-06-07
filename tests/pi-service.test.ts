@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { PiService, type PiRpcRunInput } from "../src/services/pi.service";
 import { loadEnv } from "../src/config/env";
 import type { Run } from "../src/models/run";
-import type { SandboxSession } from "../src/services/sandbox.service";
+import type { SandboxClient, SandboxSession } from "../src/services/sandbox.service";
 
 const now = new Date("2025-01-01T00:00:00.000Z");
 const run: Run = {
@@ -17,8 +17,16 @@ const run: Run = {
 const sandbox: SandboxSession = {
   id: "sandbox-run-1",
   runId: "run-1",
-  workingDirectory: "/tmp/run-1",
+  containerId: "container-1",
+  workingDirectory: "/workspace",
   branchName: "b-moe/eng-123",
+};
+const fakeSandboxService: SandboxClient = {
+  startProvisioning() {},
+  async ensureSession() { return sandbox; },
+  async exec() { return { stdout: "", stderr: "", exitCode: 0 }; },
+  async execStream() { return { stdout: "", stderr: "", exitCode: 0 }; },
+  async destroySession() {},
 };
 
 describe("PiService", () => {
@@ -34,6 +42,7 @@ describe("PiService", () => {
         PI_THINKING_LEVEL: "medium",
         PI_TOOLS: "read,bash,edit",
       }),
+      sandboxService: fakeSandboxService,
       rpcRunner: {
         async run(input) {
           rpcInput = input;
@@ -64,7 +73,7 @@ describe("PiService", () => {
     });
     expect(rpcInput).toMatchObject({
       command: "pi-dev",
-      cwd: "/tmp/run-1",
+      sandbox,
       args: [
         "--mode",
         "json",
@@ -88,18 +97,88 @@ describe("PiService", () => {
     expect(rpcInput?.prompt).toContain("b-moe/eng-123");
   });
 
+  test("defaults the sandbox pi command to pi", async () => {
+    let rpcInput: PiRpcRunInput | undefined;
+    const service = new PiService({
+      env: loadEnv({
+        REDIS_HOST: "localhost",
+        OPENROUTER_API_KEY: "sk-or-v1-test",
+      }),
+      sandboxService: fakeSandboxService,
+      rpcRunner: {
+        async run(input) {
+          rpcInput = input;
+          return [
+            {
+              type: "agent_end",
+              messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" }],
+            },
+          ];
+        },
+      },
+    });
+
+    await service.act({ run, sandbox });
+
+    expect(rpcInput?.command).toBe("pi");
+  });
+
   test("throws when Pi exits without agent_end", async () => {
     const service = new PiService({
-      env: loadEnv({ REDIS_HOST: "localhost" }),
+      env: loadEnv({ REDIS_HOST: "localhost", OPENROUTER_API_KEY: "sk-or-v1-test" }),
+      sandboxService: fakeSandboxService,
       rpcRunner: { async run() { return []; } },
     });
 
     await expect(service.act({ run, sandbox })).rejects.toThrow("without an agent_end event");
   });
 
+  test("falls back to OpenRouter credentials when PI_* is unset", async () => {
+    let rpcInput: PiRpcRunInput | undefined;
+    const service = new PiService({
+      env: loadEnv({
+        REDIS_HOST: "localhost",
+        OPENROUTER_API_KEY: "sk-or-v1-test",
+        OPENROUTER_MODEL: "google/gemini-3.1-flash-lite",
+        PI_THINKING_LEVEL: "medium",
+      }),
+      sandboxService: fakeSandboxService,
+      rpcRunner: {
+        async run(input) {
+          rpcInput = input;
+          return [
+            {
+              type: "agent_end",
+              messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" }],
+            },
+          ];
+        },
+      },
+    });
+
+    await service.act({ run, sandbox });
+
+    expect(rpcInput?.args).toEqual([
+      "--mode",
+      "json",
+      "--print",
+      "--no-session",
+      "--offline",
+      "--provider",
+      "openrouter",
+      "--model",
+      "google/gemini-3.1-flash-lite",
+      "--api-key",
+      "sk-or-v1-test",
+      "--thinking",
+      "medium",
+    ]);
+  });
+
   test("extracts final result from message_end events", async () => {
     const service = new PiService({
-      env: loadEnv({ REDIS_HOST: "localhost" }),
+      env: loadEnv({ REDIS_HOST: "localhost", OPENROUTER_API_KEY: "sk-or-v1-test" }),
+      sandboxService: fakeSandboxService,
       rpcRunner: {
         async run() {
           return [
