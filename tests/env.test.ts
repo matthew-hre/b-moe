@@ -17,6 +17,7 @@ describe("loadEnv", () => {
     const env = loadEnv({ REDIS_HOST: "localhost" });
 
     expect(env.dockerHost).toBe("local");
+    expect(env.openrouterModel).toBe("google/gemini-3.1-flash-lite");
     expect(env.redisPort).toBe(6379);
   });
 

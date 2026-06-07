@@ -21,7 +21,7 @@ export function createRedisClient(env: Env): RedisClient {
     host: env.redisHost,
     port: env.redisPort,
     lazyConnect: true,
-    maxRetriesPerRequest: 3,
+    maxRetriesPerRequest: null,
   });
 
   redis.on("connect", () => console.log("[redis] connected"));

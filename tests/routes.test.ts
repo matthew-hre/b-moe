@@ -58,7 +58,11 @@ function agentSessionCreated(agentSessionId: string, linearIssueId: string): str
   return JSON.stringify({
     type: "AgentSessionEvent",
     action: "created",
-    agentSession: { id: agentSessionId, issue: { id: linearIssueId } },
+    agentSession: {
+      id: agentSessionId,
+      issue: { id: linearIssueId },
+      creator: { name: "Matthew", url: "https://linear.app/acme/profiles/matthew" },
+    },
     promptContext: "<issue><title>Do the thing</title></issue>",
   });
 }
@@ -246,6 +250,9 @@ describe("routes", () => {
         id: "run-1",
         agentSessionId: "session-1",
         linearIssueId: "issue-1",
+        requesterUrl: "https://linear.app/acme/profiles/matthew",
+        requesterName: "Matthew",
+        promptContext: "<issue><title>Do the thing</title></issue>",
         state: "queued",
         createdAt: createdAt.toISOString(),
         updatedAt: createdAt.toISOString(),
@@ -282,14 +289,23 @@ describe("routes", () => {
   test("acknowledges prompted webhooks for an existing session", async () => {
     const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
     const run = await runStore.createRun({ agentSessionId: "session-1", linearIssueId: "issue-1" });
+    await runStore.transitionRun(run.id, "refining");
+    await runStore.transitionRun(run.id, "planning");
+    const pausedRun = await runStore.transitionRun(run.id, "awaiting_input");
     const emittedActivities: Array<{ sessionId: string; body: string | undefined; type: string }> = [];
+    const enqueuedRunIds: string[] = [];
     const linearService: LinearAgentClient = {
       async emitActivity(agentSessionId, content) {
         emittedActivities.push({ sessionId: agentSessionId, body: content.body, type: content.type });
       },
       async addPullRequestUrl() {},
     };
-    const routes = createTestRoutes(runStore, loadEnv({ REDIS_HOST: "localhost" }), defaultLinearOAuthService, linearService);
+    const agentRunQueue: AgentRunQueue = {
+      async enqueueRun(runId) {
+        enqueuedRunIds.push(runId);
+      },
+    };
+    const routes = createTestRoutes(runStore, loadEnv({ REDIS_HOST: "localhost" }), defaultLinearOAuthService, linearService, agentRunQueue);
 
     const response = await routes.fetch(
       new Request("http://localhost/webhook/linear", {
@@ -304,11 +320,52 @@ describe("routes", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(response.json()).resolves.toEqual({
-      run: { ...run, createdAt: run.createdAt.toISOString(), updatedAt: run.updatedAt.toISOString() },
+    const responseBody = (await response.json()) as { run: Record<string, unknown> };
+    expect(responseBody.run).toMatchObject({
+      id: pausedRun.id,
+      agentSessionId: "session-1",
+      linearIssueId: "issue-1",
+      state: "planning",
+      latestPromptBody: "Use the v2 API instead",
+      createdAt: pausedRun.createdAt.toISOString(),
     });
+    expect(responseBody.run.pausedFrom).toBeUndefined();
     expect(emittedActivities).toEqual([
-      { sessionId: "session-1", type: "response", body: "Hi, I'm B-MOE!" },
+      { sessionId: "session-1", type: "response", body: "Got it — I’ll revise the plan around that." },
+    ]);
+    expect(enqueuedRunIds).toEqual([run.id]);
+  });
+
+  test("responds naturally to approval prompts", async () => {
+    const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
+    const run = await runStore.createRun({ agentSessionId: "session-1", linearIssueId: "issue-1" });
+    await runStore.transitionRun(run.id, "refining");
+    await runStore.transitionRun(run.id, "planning");
+    await runStore.transitionRun(run.id, "awaiting_input");
+    const emittedActivities: Array<{ body: string | undefined; type: string }> = [];
+    const linearService: LinearAgentClient = {
+      async emitActivity(_agentSessionId, content) {
+        emittedActivities.push({ body: content.body, type: content.type });
+      },
+      async addPullRequestUrl() {},
+    };
+    const routes = createTestRoutes(runStore, loadEnv({ REDIS_HOST: "localhost" }), defaultLinearOAuthService, linearService);
+
+    const response = await routes.fetch(
+      new Request("http://localhost/webhook/linear", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "AgentSessionEvent",
+          action: "prompted",
+          agentSession: { id: "session-1" },
+          agentActivity: { body: "Looks good" },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(emittedActivities).toEqual([
+      { type: "response", body: "Approved — I’ll start implementation." },
     ]);
   });
 

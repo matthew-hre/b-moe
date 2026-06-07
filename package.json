@@ -14,7 +14,9 @@
     "format": "oxfmt --write src"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^2.0.48",
     "@linear/sdk": "^86.0.0",
+    "ai": "^6.0.197",
     "awilix": "latest",
     "bullmq": "^5.78.0",
     "ioredis": "^5.11.1",

@@ -7,6 +7,8 @@ const container = createDiContainer();
 const app = createRoutes(container);
 const { env } = container.cradle;
 
+container.cradle.agentRunWorker.start();
+
 // oxlint-disable-next-line
 console.log(
   `[startup] REDIS_HOST=${env.redisHost} REDIS_PORT=${env.redisPort} redisClient=enabled`,

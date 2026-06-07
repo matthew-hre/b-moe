@@ -13,10 +13,19 @@ export const AgentSessionIssueSchema = z
   })
   .loose();
 
+export const AgentSessionCreatorSchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    name: z.string().min(1).optional(),
+    url: z.url().optional(),
+  })
+  .loose();
+
 export const AgentSessionSchema = z
   .object({
     id: z.string().min(1),
     issue: AgentSessionIssueSchema.nullable().optional(),
+    creator: AgentSessionCreatorSchema.nullable().optional(),
   })
   .loose();
 
@@ -62,6 +71,8 @@ export interface AgentSessionTrigger {
   readonly action: AgentSessionEventAction;
   readonly agentSessionId: string;
   readonly linearIssueId?: string;
+  readonly requesterUrl?: string;
+  readonly requesterName?: string;
   readonly promptContext?: string;
   readonly promptBody?: string;
   readonly stopRequested: boolean;
@@ -69,7 +80,11 @@ export interface AgentSessionTrigger {
 
 export interface AgentSessionEventLike {
   action: string;
-  agentSession: { id: string; issue?: { id?: string } | null };
+  agentSession: {
+    id: string;
+    issue?: { id?: string } | null;
+    creator?: { url?: string; name?: string } | null;
+  };
   promptContext?: string | null;
   agentActivity?: { content?: { body?: string } | null; body?: string; signal?: string } | null;
 }
@@ -85,6 +100,8 @@ export function getAgentSessionTrigger(
     action: event.action,
     agentSessionId: event.agentSession.id,
     linearIssueId: event.agentSession.issue?.id,
+    requesterUrl: event.agentSession.creator?.url,
+    requesterName: event.agentSession.creator?.name,
     promptContext: event.promptContext ?? undefined,
     promptBody: event.agentActivity?.content?.body ?? event.agentActivity?.body,
     stopRequested: event.agentActivity?.signal === "stop",

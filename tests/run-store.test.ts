@@ -97,12 +97,17 @@ function runStoreContract(name: string, createStore: (now?: Date) => RunStore): 
       const now = new Date("2025-01-01T00:00:00.000Z");
       const store = createStore(now);
 
-      const run = await store.createRun({ agentSessionId: "session-1", linearIssueId: "issue-1" });
+      const run = await store.createRun({
+        agentSessionId: "session-1",
+        linearIssueId: "issue-1",
+        promptContext: "<issue><title>Do the thing</title></issue>",
+      });
 
       expect(run).toEqual({
         id: "run-1",
         agentSessionId: "session-1",
         linearIssueId: "issue-1",
+        promptContext: "<issue><title>Do the thing</title></issue>",
         state: "queued",
         createdAt: now,
         updatedAt: now,

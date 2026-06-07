@@ -6,6 +6,9 @@ export interface CreateRunInput {
   readonly id?: string;
   readonly agentSessionId: string;
   readonly linearIssueId?: string;
+  readonly requesterUrl?: string;
+  readonly requesterName?: string;
+  readonly promptContext?: string;
 }
 
 export interface RunStore {
@@ -118,6 +121,9 @@ export class RedisRunStore implements RunStore {
       id: input.id ?? this.createRunId(),
       agentSessionId: input.agentSessionId,
       linearIssueId: input.linearIssueId,
+      requesterUrl: input.requesterUrl,
+      requesterName: input.requesterName,
+      promptContext: input.promptContext,
       state: "queued",
       createdAt: now,
       updatedAt: now,
@@ -200,6 +206,9 @@ export class InMemoryRunStore implements RunStore {
       id: input.id ?? this.createRunId(),
       agentSessionId: input.agentSessionId,
       linearIssueId: input.linearIssueId,
+      requesterUrl: input.requesterUrl,
+      requesterName: input.requesterName,
+      promptContext: input.promptContext,
       state: "queued",
       createdAt: now,
       updatedAt: now,

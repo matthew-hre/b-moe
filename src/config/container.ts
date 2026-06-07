@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { asClass, asFunction, asValue, createContainer, type AwilixContainer } from "awilix";
 import { LinearClient } from "@linear/sdk";
+import { generateText } from "ai";
 import { loadEnv, type Env } from "./env";
 import { LinearOAuthService, type LinearOAuthClient } from "../services/linear-oauth.service";
 import { LinearService, type LinearAgentClient } from "../services/linear.service";
+import { LlmService, type LlmClient } from "../services/llm.service";
 import { AgentSessionTriggerService } from "../services/agent-session-trigger.service";
+import { PlanningService, type PlanningClient } from "../services/planning.service";
 import { BullMqAgentRunQueue, type AgentRunQueue } from "../queue/queue";
+import { AgentRunWorker } from "../workers/agent-run.worker";
 import { RedisRunStore, type RunStore } from "../store/run.store";
 import {
   RedisLinearInstallStore,
@@ -17,7 +21,10 @@ export interface Cradle {
   readonly env: Env;
   readonly linearOAuthService: LinearOAuthClient;
   readonly linearService: LinearAgentClient;
+  readonly llmService: LlmClient;
+  readonly planningService: PlanningClient;
   readonly agentSessionTriggerService: AgentSessionTriggerService;
+  readonly agentRunWorker: AgentRunWorker;
   readonly agentRunQueue: AgentRunQueue;
   readonly runStore: RunStore;
   readonly linearInstallStore: LinearInstallStore;
@@ -39,6 +46,11 @@ export function createDiContainer(env: Env = loadEnv()): AwilixContainer<Cradle>
       .singleton()
       .inject(() => ({ createRunId: randomUUID, getCurrentDate: () => new Date() })),
     agentRunQueue: asFunction(({ redisClient }) => new BullMqAgentRunQueue(redisClient)).singleton(),
+    agentRunWorker: asClass(AgentRunWorker).singleton(),
+    llmService: asClass(LlmService)
+      .singleton()
+      .inject(() => ({ createModel: undefined, generateTextFn: generateText })),
+    planningService: asClass(PlanningService).singleton(),
     linearOAuthService: asClass(LinearOAuthService)
       .singleton()
       .inject(() => ({

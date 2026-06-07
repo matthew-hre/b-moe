@@ -1,8 +1,9 @@
-import type { Run } from "../models/run";
+import { resumeRun, type Run } from "../models/run";
 import type { getAgentSessionTrigger } from "../models/linear";
 import type { LinearAgentClient } from "./linear.service";
 import type { RunStore } from "../store/run.store";
 import type { AgentRunQueue } from "../queue/queue";
+import { isPlanApproval } from "../workers/agent-run.worker";
 
 export interface AgentSessionTriggerResponse {
   readonly run?: Run;
@@ -69,6 +70,9 @@ export class AgentSessionTriggerService {
     const run = await this.runStore.createRun({
       agentSessionId: trigger.agentSessionId,
       linearIssueId: trigger.linearIssueId,
+      requesterUrl: trigger.requesterUrl,
+      requesterName: trigger.requesterName,
+      promptContext: trigger.promptContext,
     });
 
     console.log(`[agent-session-trigger] created run id=${run.id}; emitting greeting thought`);
@@ -102,15 +106,35 @@ export class AgentSessionTriggerService {
       return { ignored: true };
     }
 
-    console.log(`[agent-session-trigger] prompted run id=${run.id}; emitting greeting response`);
+    const updatedRun =
+      run.state === "awaiting_input"
+        ? await this.runStore.saveRun({ ...resumeRun(run), latestPromptBody: trigger.promptBody })
+        : await this.runStore.saveRun({ ...run, latestPromptBody: trigger.promptBody });
+
+    console.log(`[agent-session-trigger] prompted run id=${updatedRun.id}; emitting response`);
     await this.linearService.emitActivity(trigger.agentSessionId, {
       type: "response",
-      body: "Hi, I'm B-MOE!",
+      body: getPromptedResponseBody(trigger.promptBody),
     });
     console.log(
       `[agent-session-trigger] emitted greeting response for agentSessionId=${trigger.agentSessionId}`,
     );
 
-    return { run };
+    await this.agentRunQueue.enqueueRun(updatedRun.id);
+    console.log(`[agent-session-trigger] enqueued prompted run id=${updatedRun.id}`);
+
+    return { run: updatedRun };
   }
+}
+
+function getPromptedResponseBody(promptBody: string | undefined): string {
+  if (isPlanApproval(promptBody)) {
+    return "Approved — I’ll start implementation.";
+  }
+
+  if (promptBody?.trim()) {
+    return "Got it — I’ll revise the plan around that.";
+  }
+
+  return "Got it — I’ll continue.";
 }
