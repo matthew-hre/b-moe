@@ -97,13 +97,6 @@ export async function processAgentRun(
 
   const refiningRun = run.state === "refining" ? run : await runStore.transitionRun(run.id, "refining");
 
-  if (run.state === "queued") {
-    await linearService.emitActivity(refiningRun.agentSessionId, {
-      type: "thought",
-      body: "I’ve started refining the issue and gathering context.",
-    });
-  }
-
   await linearService.emitActivity(refiningRun.agentSessionId, {
     type: "thought",
     body: "Starting repository research and implementation in Pi.",
@@ -126,10 +119,6 @@ async function processActing(
   { linearService, sandboxService, piService, gitService, githubService, runStore }: Pick<AgentRunWorkerDependencies, "linearService" | "sandboxService" | "piService" | "gitService" | "githubService" | "runStore">,
 ): Promise<void> {
   console.log(`[agent-run-worker] acting start runId=${run.id} repoUrl=${run.repoUrl ?? "unset"}`);
-  await linearService.emitActivity(run.agentSessionId, {
-    type: "thought",
-    body: "Starting implementation in an isolated sandbox.",
-  });
 
   const sandbox = await runStep(run.id, "ensure sandbox", () => sandboxService.ensureSession(run));
   let shouldDestroySandbox = true;
@@ -181,7 +170,7 @@ async function processActing(
     if (!hasChanges) {
       await linearService.emitActivity(run.agentSessionId, {
         type: "response",
-        body: `${result.summary}\n\nPi completed but did not produce any git changes, so I’m not opening a PR yet.`,
+        body: `${result.summary}\n\nPi completed but did not produce any git changes, so I'm not opening a PR yet.`,
       });
       return;
     }
