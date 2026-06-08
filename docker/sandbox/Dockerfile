@@ -20,7 +20,7 @@ RUN curl -fsSL https://bun.sh/install | bash
 RUN corepack enable \
   && corepack prepare pnpm@10 --activate
 
-RUN npm install -g @mariozechner/pi-coding-agent
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
 WORKDIR /workspace
 

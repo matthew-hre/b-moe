@@ -7,12 +7,31 @@ import {
   MissingPiCredentialsError,
   resolvePiAgentConfig,
 } from "./pi-config";
+import { buildActPrompt, parseActResponse } from "./pi-prompts";
 
-export interface PiActResult {
-  readonly summary: string;
+export interface PiAgentResult {
+  readonly text: string;
   readonly stopReason: string;
   readonly toolCallCount: number;
+  readonly sessionId?: string;
 }
+
+interface PiActResultBase {
+  readonly stopReason: string;
+  readonly toolCallCount: number;
+  readonly sessionId?: string;
+}
+
+export type PiActResult =
+  | (PiActResultBase & {
+      readonly kind: "completed";
+      readonly summary: string;
+    })
+  | (PiActResultBase & {
+      readonly kind: "needs_input";
+      readonly question: string;
+      readonly context?: string;
+    });
 
 export interface PiClient {
   act(input: { run: Run; sandbox: SandboxSession; onThought?: (thought: string) => Promise<void>; onProgress?: (message: string) => Promise<void> }): Promise<PiActResult>;
@@ -23,6 +42,7 @@ export interface PiRpcRunInput {
   readonly prompt: string;
   readonly command: string;
   readonly args: readonly string[];
+    readonly sessionId?: string;
   readonly onThought?: (thought: string) => Promise<void>;
   readonly onProgress?: (message: string) => Promise<void>;
 }
@@ -49,6 +69,36 @@ export class PiService implements PiClient {
   }
 
   async act({ run, sandbox, onThought, onProgress }: { run: Run; sandbox: SandboxSession; onThought?: (thought: string) => Promise<void>; onProgress?: (message: string) => Promise<void> }): Promise<PiActResult> {
+    const result = await this.runPiAgent({
+      sandbox,
+      prompt: buildActPrompt(run, sandbox),
+      sessionId: run.piSessionId,
+      onThought,
+      onProgress,
+    });
+    const actResponse = parseActResponse(result.text || "Pi completed without a text summary.");
+    const response = {
+      ...actResponse,
+      stopReason: result.stopReason,
+      toolCallCount: result.toolCallCount,
+    };
+
+    return result.sessionId ? { ...response, sessionId: result.sessionId } : response;
+  }
+
+  private async runPiAgent({
+    sandbox,
+    prompt,
+    sessionId,
+    onThought,
+    onProgress,
+  }: {
+    readonly sandbox: SandboxSession;
+    readonly prompt: string;
+    readonly sessionId?: string;
+    readonly onThought?: (thought: string) => Promise<void>;
+    readonly onProgress?: (message: string) => Promise<void>;
+  }): Promise<PiAgentResult> {
     const config = resolvePiAgentConfig(this.env);
 
     if (!config) {
@@ -59,12 +109,16 @@ export class PiService implements PiClient {
 
     const events = await this.rpcRunner.run({
       sandbox,
-      prompt: buildActPrompt(run, sandbox),
+      prompt,
       command: this.env.piCommand,
-      args: buildPiArgs(config, this.env),
+      args: buildPiArgs(config, this.env, {
+        sessionId,
+        sessionName: sandbox.runId,
+      }),
       onThought,
       onProgress,
     });
+    const sessionEvent = events.find(isSessionEvent);
     const agentEnd = events.find(isAgentEndEvent);
     const messages = agentEnd?.messages ?? events.filter(isMessageEndEvent).map((event) => event.message);
 
@@ -74,12 +128,13 @@ export class PiService implements PiClient {
 
     const assistantMessages = messages.filter(isAssistantMessage);
     const lastAssistantMessage = assistantMessages[assistantMessages.length - 1];
-    const summary = extractText(lastAssistantMessage) || "Pi completed without a text summary.";
+    const text = extractText(lastAssistantMessage);
 
     return {
-      summary,
+      text,
       stopReason: lastAssistantMessage?.stopReason ?? "unknown",
       toolCallCount: events.filter(isToolExecutionStartEvent).length,
+      sessionId: sessionEvent?.id,
     };
   }
 }
@@ -116,13 +171,19 @@ export class SandboxPiRpcRunner implements PiRpcRunner {
   }
 }
 
-function createPiEventParser(input: Pick<PiRpcRunInput, "onThought" | "onProgress">) {
+interface PiEventParser {
+  readonly events: unknown[];
+  consume(chunk: string): void;
+  flush(): Promise<void>;
+}
+
+function createPiEventParser(input: Pick<PiRpcRunInput, "onThought" | "onProgress">): PiEventParser {
   const events: unknown[] = [];
   const thoughtPromises: Promise<void>[] = [];
   const progressPromises: Promise<void>[] = [];
   let buffer = "";
 
-  const consume = (chunk: string) => {
+  const consume = (chunk: string): void => {
     buffer += chunk;
     for (;;) {
       const newlineIndex = buffer.indexOf("\n");
@@ -195,24 +256,14 @@ function sanitizePiExecLog(command: string, args: readonly string[]): string {
   return `${command} ${sanitizedArgs.join(" ")}`;
 }
 
-function buildActPrompt(run: Run, sandbox: SandboxSession): string {
-  return [
-    "Implement the approved plan for this Linear issue.",
-    `Run ID: ${run.id}`,
-    run.linearIssueId ? `Linear issue ID: ${run.linearIssueId}` : undefined,
-    `Repository branch: ${sandbox.branchName}`,
-    run.plan ? `Approved plan:\n${run.plan}` : undefined,
-    run.promptContext ? `Linear context:\n${run.promptContext}` : undefined,
-    "Make the code changes in this working tree and run the most relevant checks you can infer from the project.",
-    "Do not create, rename, switch, or push git branches. Stay on the provided repository branch; B-MOE will push the branch and open the pull request after you finish.",
-  ]
-    .filter((part): part is string => Boolean(part))
-    .join("\n\n");
-}
-
 interface AgentEndEvent {
   readonly type: "agent_end";
   readonly messages: readonly unknown[];
+}
+
+interface SessionEvent {
+  readonly type: "session";
+  readonly id: string;
 }
 
 interface MessageEndEvent {
@@ -238,6 +289,10 @@ interface ToolExecutionEndEvent {
 
 function isAgentEndEvent(event: unknown): event is AgentEndEvent {
   return isRecord(event) && event.type === "agent_end" && Array.isArray(event.messages);
+}
+
+function isSessionEvent(event: unknown): event is SessionEvent {
+  return isRecord(event) && event.type === "session" && typeof event.id === "string";
 }
 
 function isMessageEndEvent(event: unknown): event is MessageEndEvent {
@@ -293,14 +348,14 @@ function extractToolCallProgress(message: AssistantMessage): readonly string[] {
     }
 
     const command = isRecord(content.arguments) && typeof content.arguments.command === "string"
-      ? content.arguments.command.split("\n")[0]
+      ? summarizeShellCommand(content.arguments.command)
       : undefined;
 
-    if (content.name === "bash" && command) {
-      return [`Running \`${command.slice(0, 120)}\``];
+    if (content.name === "bash") {
+      return command ? [`Running \`${command.slice(0, 120)}\``] : [];
     }
     if ((content.name === "read" || content.name === "write" || content.name === "edit") && isRecord(content.arguments) && typeof content.arguments.path === "string") {
-      return [`${capitalize(content.name)}ing \`${content.arguments.path}\``];
+      return [`${formatFileToolProgress(content.name)} \`${content.arguments.path}\``];
     }
 
     return [`Using ${content.name}`];
@@ -309,9 +364,10 @@ function extractToolCallProgress(message: AssistantMessage): readonly string[] {
 
 function summarizeToolResult(event: ToolExecutionEndEvent): string | undefined {
   const text = JSON.stringify(event).slice(0, 1000);
+  const exitCode = extractExitCode(event.result);
 
-  if (/Found 0 warnings and 0 errors|\bpass\)/i.test(text)) {
-    return "Checks are passing so far.";
+  if (exitCode === 0 && /Found 0 warnings and 0 errors/i.test(text)) {
+    return "Lint completed without reported errors.";
   }
   if (/Successfully wrote/i.test(text)) {
     return "Updated files in the workspace.";
@@ -323,8 +379,33 @@ function summarizeToolResult(event: ToolExecutionEndEvent): string | undefined {
   return undefined;
 }
 
-function capitalize(value: string): string {
-  return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
+function summarizeShellCommand(command: string): string | undefined {
+  return command
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith("#"));
+}
+
+function formatFileToolProgress(toolName: string): string {
+  if (toolName === "read") {
+    return "Reading";
+  }
+  if (toolName === "write") {
+    return "Writing";
+  }
+  if (toolName === "edit") {
+    return "Editing";
+  }
+
+  return `Using ${toolName}`;
+}
+
+function extractExitCode(value: unknown): number | undefined {
+  if (isRecord(value) && typeof value.exitCode === "number") {
+    return value.exitCode;
+  }
+
+  return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

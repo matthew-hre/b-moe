@@ -1,4 +1,5 @@
 import Dockerode from "dockerode";
+import { Writable } from "node:stream";
 import type { Env } from "../config/env";
 
 export interface ContainerExecOptions {
@@ -85,7 +86,7 @@ class DockerodeEngine implements DockerEngine {
     options: ContainerExecOptions = {},
     collection: { readonly collectStdout?: boolean; readonly collectStderr?: boolean } = {
       collectStdout: false,
-      collectStderr: false,
+      collectStderr: true,
     },
   ): Promise<ContainerExecResult> {
     const container = this.docker.getContainer(containerId);
@@ -114,7 +115,7 @@ class DockerodeEngine implements DockerEngine {
 
     await new Promise<void>((resolve, reject) => {
       let settled = false;
-      const finish = () => {
+      const finish = (): void => {
         if (settled) {
           return;
         }
@@ -123,27 +124,28 @@ class DockerodeEngine implements DockerEngine {
         resolve();
       };
 
-      this.docker.modem.demuxStream(
-        stream,
-        {
-          write: (chunk: Buffer | string) => {
-            const text = chunk.toString();
-            if (collection.collectStdout) {
-              stdout += text;
-            }
-            handlers.onStdoutChunk(text);
-          },
+      const stdoutStream = new Writable({
+        write: (chunk, _encoding, callback) => {
+          const text = chunk.toString();
+          if (collection.collectStdout) {
+            stdout += text;
+          }
+          handlers.onStdoutChunk(text);
+          callback();
         },
-        {
-          write: (chunk: Buffer | string) => {
-            const text = chunk.toString();
-            if (collection.collectStderr) {
-              stderr += text;
-            }
-            handlers.onStderrChunk?.(text);
-          },
+      });
+      const stderrStream = new Writable({
+        write: (chunk, _encoding, callback) => {
+          const text = chunk.toString();
+          if (collection.collectStderr) {
+            stderr += text;
+          }
+          handlers.onStderrChunk?.(text);
+          callback();
         },
-      );
+      });
+
+      this.docker.modem.demuxStream(stream, stdoutStream, stderrStream);
 
       stream.on("end", finish);
       stream.on("close", finish);

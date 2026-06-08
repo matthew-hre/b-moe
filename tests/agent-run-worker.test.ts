@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { AgentRunWorker, processAgentRun } from "../src/workers/agent-run.worker";
 import type { LinearAgentClient } from "../src/services/linear.service";
-import type { PlanningClient } from "../src/services/planning.service";
 import type { SandboxClient } from "../src/services/sandbox.service";
 import type { PiClient } from "../src/services/pi.service";
 import type { GitClient } from "../src/services/git.service";
@@ -10,11 +9,6 @@ import type { RedisClient } from "../src/store/redis";
 import { InMemoryRunStore } from "../src/store/run.store";
 
 const fakeRedisClient = {} as RedisClient;
-const planningService: PlanningClient = {
-  async createPlan() {
-    return "Plan for Do the thing:\n1. Test plan";
-  },
-};
 const sandboxService: SandboxClient = {
   startProvisioning() {},
   async ensureSession(run) {
@@ -36,7 +30,7 @@ const sandboxService: SandboxClient = {
 };
 const piService: PiClient = {
   async act({ run }) {
-    return { summary: `Pi acted on ${run.id}`, thoughts: [], stopReason: "stop", toolCallCount: 1 };
+    return { kind: "completed", summary: `Pi acted on ${run.id}`, stopReason: "stop", toolCallCount: 1 };
   },
 };
 const gitService: GitClient = {
@@ -53,7 +47,7 @@ const githubService: GitHubClient = {
 };
 
 describe("processAgentRun", () => {
-  test("transitions queued runs through planning to awaiting input and emits progress", async () => {
+  test("transitions queued runs directly into acting and opens a PR", async () => {
     const runStore = new InMemoryRunStore({
       createRunId: () => "run-1",
       getCurrentDate: () => new Date("2025-01-01T00:00:00.000Z"),
@@ -75,7 +69,6 @@ describe("processAgentRun", () => {
 
     await processAgentRun(run.id, {
       linearService,
-      planningService,
       sandboxService,
       piService,
       gitService,
@@ -85,11 +78,10 @@ describe("processAgentRun", () => {
     });
 
     expect(await runStore.getRun(run.id)).toMatchObject({
-      state: "awaiting_input",
-      pausedFrom: "planning",
-      plan: "Plan for Do the thing:\n1. Test plan",
+      state: "pr_opened",
+      pullRequest: { url: "https://github.com/acme/repo/pull/1" },
     });
-    expect(emittedActivities).toEqual([
+    expect(emittedActivities.slice(0, 3)).toEqual([
       {
         sessionId: "session-1",
         type: "thought",
@@ -97,13 +89,18 @@ describe("processAgentRun", () => {
       },
       {
         sessionId: "session-1",
-        type: "elicitation",
-        body: "https://linear.app/acme/profiles/matthew please review this plan:\n\nPlan for Do the thing:\n1. Test plan",
+        type: "thought",
+        body: "Starting repository research and implementation in Pi.",
+      },
+      {
+        sessionId: "session-1",
+        type: "thought",
+        body: "Starting implementation in an isolated sandbox.",
       },
     ]);
   });
 
-  test("continues refining runs into planning", async () => {
+  test("continues refining runs into acting", async () => {
     const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
     const run = await runStore.createRun({ agentSessionId: "session-1", repoUrl: "https://github.com/acme/repo" });
     await runStore.transitionRun(run.id, "refining");
@@ -117,7 +114,6 @@ describe("processAgentRun", () => {
 
     await processAgentRun(run.id, {
       linearService,
-      planningService,
       sandboxService,
       piService,
       gitService,
@@ -127,13 +123,9 @@ describe("processAgentRun", () => {
     });
 
     expect(await runStore.getRun(run.id)).toMatchObject({
-      state: "awaiting_input",
-      pausedFrom: "planning",
-      plan: "Plan for Do the thing:\n1. Test plan",
+      state: "pr_opened",
     });
-    expect(emittedActivities).toEqual([
-      { type: "elicitation", body: "Plan for Do the thing:\n1. Test plan" },
-    ]);
+    expect(emittedActivities[0]).toEqual({ type: "thought", body: "Starting repository research and implementation in Pi." });
   });
 
   test("asks for repository selection before refining", async () => {
@@ -152,7 +144,6 @@ describe("processAgentRun", () => {
 
     await processAgentRun(run.id, {
       linearService,
-      planningService,
       sandboxService,
       piService,
       gitService,
@@ -170,12 +161,15 @@ describe("processAgentRun", () => {
     ]);
   });
 
-  test("moves approved plans into acting", async () => {
+  test("pauses acting runs when Pi asks for human input", async () => {
     const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
-    const run = await runStore.createRun({ agentSessionId: "session-1", repoUrl: "https://github.com/acme/repo" });
+    const run = await runStore.createRun({
+      agentSessionId: "session-1",
+      requesterUrl: "https://linear.app/acme/profiles/matthew",
+      repoUrl: "https://github.com/acme/repo",
+    });
     await runStore.transitionRun(run.id, "refining");
-    const planningRun = await runStore.transitionRun(run.id, "planning");
-    await runStore.saveRun({ ...planningRun, latestPromptBody: "looks good" });
+    await runStore.transitionRun(run.id, "acting");
     const emittedActivities: Array<{ type: string; body: string | undefined }> = [];
     const linearService: LinearAgentClient = {
       async emitActivity(_agentSessionId, content) {
@@ -183,50 +177,24 @@ describe("processAgentRun", () => {
       },
       async addPullRequestUrl() {},
     };
-
-    await processAgentRun(run.id, {
-      linearService,
-      planningService,
-      sandboxService,
-      piService,
-      gitService,
-      githubService,
-      redisClient: fakeRedisClient,
-      runStore,
-    });
-
-    expect(await runStore.getRun(run.id)).toMatchObject({
-      state: "pr_opened",
-      pullRequest: { url: "https://github.com/acme/repo/pull/1" },
-    });
-    expect(emittedActivities).toEqual([
-      { type: "thought", body: "Plan approved. I’m moving into implementation." },
-      { type: "thought", body: "Starting implementation in an isolated sandbox." },
-      { type: "thought", body: "Committed any pending workspace changes." },
-      { type: "thought", body: "Pushed branch `b-moe/run-1`." },
-      { type: "response", body: "Pi acted on run-1\n\nOpened PR: https://github.com/acme/repo/pull/1" },
-    ]);
-  });
-
-  test("replans on non-approval feedback and waits again", async () => {
-    const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
-    const run = await runStore.createRun({ agentSessionId: "session-1" });
-    await runStore.transitionRun(run.id, "refining");
-    const planningRun = await runStore.transitionRun(run.id, "planning");
-    await runStore.saveRun({ ...planningRun, latestPromptBody: "Use the v2 API instead" });
-    const emittedActivities: Array<{ type: string; body: string | undefined }> = [];
-    const linearService: LinearAgentClient = {
-      async emitActivity(_agentSessionId, content) {
-        emittedActivities.push({ type: content.type, body: content.body });
+    const piClient: PiClient = {
+      async act() {
+        return {
+          kind: "needs_input",
+          question: "Which image URL should I use for BMO?",
+          context: "Need the image before editing README.md.",
+          stopReason: "stop",
+          toolCallCount: 2,
+          sessionId: "pi-session-1",
+        };
       },
-      async addPullRequestUrl() {},
     };
+    let destroyed = false;
 
     await processAgentRun(run.id, {
       linearService,
-      planningService,
-      sandboxService,
-      piService,
+      sandboxService: { ...sandboxService, async destroySession() { destroyed = true; } },
+      piService: piClient,
       gitService,
       githubService,
       redisClient: fakeRedisClient,
@@ -235,14 +203,20 @@ describe("processAgentRun", () => {
 
     expect(await runStore.getRun(run.id)).toMatchObject({
       state: "awaiting_input",
-      pausedFrom: "planning",
-      latestPromptBody: undefined,
-      plan: "Plan for Do the thing:\n1. Test plan",
+      pausedFrom: "acting",
+      executionContext: "Need the image before editing README.md.",
+      piSessionId: "pi-session-1",
     });
+    expect(destroyed).toBe(false);
     expect(emittedActivities).toEqual([
-      { type: "elicitation", body: "Plan for Do the thing:\n1. Test plan" },
+      { type: "thought", body: "Starting implementation in an isolated sandbox." },
+      {
+        type: "elicitation",
+        body: "https://linear.app/acme/profiles/matthew Which image URL should I use for BMO?",
+      },
     ]);
   });
+
 });
 
 describe("AgentRunWorker", () => {
@@ -255,7 +229,6 @@ describe("AgentRunWorker", () => {
     };
     const worker = new AgentRunWorker({
       linearService,
-      planningService,
       sandboxService,
       piService,
       gitService,
@@ -266,14 +239,13 @@ describe("AgentRunWorker", () => {
 
     await worker.processJob({ data: { runId: run.id } });
 
-    expect((await runStore.getRun(run.id))?.state).toBe("awaiting_input");
+    expect((await runStore.getRun(run.id))?.state).toBe("pr_opened");
   });
 
   test("processes acting runs with sandbox and Pi", async () => {
     const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
     const run = await runStore.createRun({ agentSessionId: "session-1", repoUrl: "https://github.com/acme/repo" });
     await runStore.transitionRun(run.id, "refining");
-    await runStore.transitionRun(run.id, "planning");
     await runStore.transitionRun(run.id, "acting");
     const events: string[] = [];
     const linearService: LinearAgentClient = {
@@ -307,13 +279,12 @@ describe("AgentRunWorker", () => {
     const piClient: PiClient = {
       async act() {
         events.push("pi:act");
-        return { summary: "Done acting", thoughts: [], stopReason: "stop", toolCallCount: 1 };
+        return { kind: "completed", summary: "Done acting", stopReason: "stop", toolCallCount: 1 };
       },
     };
 
     await processAgentRun(run.id, {
       linearService,
-      planningService,
       sandboxService: sandboxClient,
       piService: piClient,
       gitService,
@@ -337,7 +308,6 @@ describe("AgentRunWorker", () => {
     const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
     const run = await runStore.createRun({ agentSessionId: "session-1", repoUrl: "https://github.com/acme/repo" });
     await runStore.transitionRun(run.id, "refining");
-    await runStore.transitionRun(run.id, "planning");
     await runStore.transitionRun(run.id, "acting");
     const emittedActivities: Array<{ type: string; body: string | undefined }> = [];
     let pushed = false;
@@ -351,7 +321,6 @@ describe("AgentRunWorker", () => {
 
     await processAgentRun(run.id, {
       linearService,
-      planningService,
       sandboxService,
       piService,
       gitService: {

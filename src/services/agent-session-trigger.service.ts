@@ -179,11 +179,11 @@ function getPromptedResponseBody(
   }
 
   if (isPlanApproval(promptBody)) {
-    return "Approved — I’ll start implementation.";
+    return "Got it — I’ll continue implementation.";
   }
 
   if (promptBody?.trim()) {
-    return "Got it — I’ll revise the plan around that.";
+    return "Got it — I’ll continue with that context.";
   }
 
   return "Got it — I’ll continue.";

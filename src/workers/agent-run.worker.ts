@@ -2,7 +2,6 @@ import { Worker, type ConnectionOptions, type Job } from "bullmq";
 import { AGENT_RUN_QUEUE_NAME, type AgentRunJobData } from "../queue/queue";
 import type { Run } from "../models/run";
 import type { LinearAgentClient } from "../services/linear.service";
-import type { PlanningClient } from "../services/planning.service";
 import type { SandboxClient } from "../services/sandbox.service";
 import type { PiClient } from "../services/pi.service";
 import type { GitClient } from "../services/git.service";
@@ -12,7 +11,6 @@ import type { RunStore } from "../store/run.store";
 
 export interface AgentRunWorkerDependencies {
   readonly linearService: LinearAgentClient;
-  readonly planningService: PlanningClient;
   readonly sandboxService: SandboxClient;
   readonly piService: PiClient;
   readonly gitService: GitClient;
@@ -61,7 +59,7 @@ export class AgentRunWorker {
 
 export async function processAgentRun(
   runId: string,
-  { linearService, planningService, sandboxService, piService, gitService, githubService, runStore }: AgentRunWorkerDependencies,
+  { linearService, sandboxService, piService, gitService, githubService, runStore }: AgentRunWorkerDependencies,
 ): Promise<void> {
   const run = await runStore.getRun(runId);
 
@@ -72,7 +70,6 @@ export async function processAgentRun(
   if (
     run.state !== "queued" &&
     run.state !== "refining" &&
-    run.state !== "planning" &&
     run.state !== "acting"
   ) {
     console.log(`[agent-run-worker] run id=${runId} is ${run.state}; skipping`);
@@ -98,11 +95,6 @@ export async function processAgentRun(
     return;
   }
 
-  if (run.state === "planning") {
-    await processPlanReview(run, { linearService, planningService, sandboxService, piService, gitService, githubService, runStore });
-    return;
-  }
-
   const refiningRun = run.state === "refining" ? run : await runStore.transitionRun(run.id, "refining");
 
   if (run.state === "queued") {
@@ -112,48 +104,13 @@ export async function processAgentRun(
     });
   }
 
-  const planningRun = await runStore.transitionRun(refiningRun.id, "planning");
-  const plan = await planningService.createPlan(planningRun);
-  const plannedRun = await runStore.saveRun({ ...planningRun, plan });
-  await requestPlanReview(plannedRun, plan, { linearService, runStore });
-}
-
-async function processPlanReview(
-  run: Run,
-  dependencies: Pick<AgentRunWorkerDependencies, "linearService" | "planningService" | "sandboxService" | "piService" | "gitService" | "githubService" | "runStore">,
-): Promise<void> {
-  const { linearService, planningService, runStore } = dependencies;
-
-  if (isPlanApproval(run.latestPromptBody)) {
-    const actingRun = await runStore.transitionRun(run.id, "acting");
-    await linearService.emitActivity(run.agentSessionId, {
-      type: "thought",
-      body: "Plan approved. I’m moving into implementation.",
-    });
-    await processActing(actingRun, dependencies);
-    return;
-  }
-
-  const plan = await planningService.createPlan(run);
-  const plannedRun = await runStore.saveRun({ ...run, plan, latestPromptBody: undefined });
-  await requestPlanReview(plannedRun, plan, { linearService, runStore });
-}
-
-async function requestPlanReview(
-  run: Run,
-  plan: string,
-  { linearService, runStore }: Pick<AgentRunWorkerDependencies, "linearService" | "runStore">,
-): Promise<void> {
-  const responseBody = run.requesterUrl
-    ? `${run.requesterUrl} please review this plan:\n\n${plan}`
-    : plan;
-
-  await linearService.emitActivity(run.agentSessionId, {
-    type: "elicitation",
-    body: responseBody,
+  await linearService.emitActivity(refiningRun.agentSessionId, {
+    type: "thought",
+    body: "Starting repository research and implementation in Pi.",
   });
 
-  await runStore.transitionRun(run.id, "awaiting_input");
+  const actingRun = await runStore.transitionRun(refiningRun.id, "acting");
+  await processActing(actingRun, { linearService, sandboxService, piService, gitService, githubService, runStore });
 }
 
 export function isPlanApproval(promptBody: string | undefined): boolean {
@@ -175,6 +132,7 @@ async function processActing(
   });
 
   const sandbox = await runStep(run.id, "ensure sandbox", () => sandboxService.ensureSession(run));
+  let shouldDestroySandbox = true;
 
   try {
     const result = await runStep(run.id, "run Pi", () => piService.act({
@@ -183,6 +141,25 @@ async function processActing(
       onThought: (thought) => linearService.emitActivity(run.agentSessionId, { type: "thought", body: thought }),
       onProgress: (message: string) => linearService.emitActivity(run.agentSessionId, { type: "thought", body: message }),
     }));
+    const piRun = result.sessionId && result.sessionId !== run.piSessionId
+      ? await runStore.saveRun({ ...run, piSessionId: result.sessionId })
+      : run;
+
+    if (result.kind === "needs_input") {
+      const pausedRun = await runStore.saveRun({
+        ...piRun,
+        executionContext: result.context ?? run.executionContext,
+        latestPromptBody: undefined,
+      });
+      await linearService.emitActivity(run.agentSessionId, {
+        type: "elicitation",
+        body: run.requesterUrl ? `${run.requesterUrl} ${result.question}` : result.question,
+      });
+      await runStore.transitionRun(pausedRun.id, "awaiting_input");
+      shouldDestroySandbox = false;
+      return;
+    }
+
     const gitSummary = await runStep(run.id, "describe git head", () => gitService.describeHead({
       sandbox,
       baseBranch: run.baseBranch,
@@ -243,7 +220,9 @@ async function processActing(
     });
     throw error;
   } finally {
-    await runStep(run.id, "destroy sandbox", () => sandboxService.destroySession(sandbox));
+    if (shouldDestroySandbox) {
+      await runStep(run.id, "destroy sandbox", () => sandboxService.destroySession(sandbox));
+    }
   }
 }
 

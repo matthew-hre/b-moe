@@ -3,7 +3,6 @@ import { z } from "zod";
 export const runStates = [
   "queued",
   "refining",
-  "planning",
   "acting",
   "awaiting_input",
   "pr_opened",
@@ -52,7 +51,8 @@ export const RunSchema = z
     baseBranch: z.string().min(1).optional(),
     repositorySelectionQuestion: z.string().min(1).optional(),
     latestPromptBody: z.string().min(1).optional(),
-    plan: z.string().min(1).optional(),
+    executionContext: z.string().min(1).optional(),
+    piSessionId: z.string().min(1).optional(),
     state: RunStateSchema,
     pausedFrom: RunStateSchema.optional(),
     createdAt: z.date(),
@@ -67,12 +67,11 @@ export type Run = Readonly<z.infer<typeof RunSchema>>;
 
 // Phases the agent can pause from to wait on a human (`awaiting_input`), and
 // resume back into when a `prompted` webhook arrives.
-const pausablePhases = ["refining", "planning", "acting"] as const satisfies readonly RunState[];
+const pausablePhases = ["refining", "acting"] as const satisfies readonly RunState[];
 
 const allowedTransitions = {
   queued: ["refining"],
-  refining: ["planning", "awaiting_input"],
-  planning: ["acting", "awaiting_input"],
+  refining: ["acting", "awaiting_input"],
   acting: ["pr_opened", "awaiting_input"],
   awaiting_input: pausablePhases,
   pr_opened: ["monitoring"],

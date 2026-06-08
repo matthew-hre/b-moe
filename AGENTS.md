@@ -35,7 +35,7 @@ src/
     linear-oauth.service.ts - actor=app install, exchange code, fetch app user id
     github.service.ts - GitHub API client
     sandbox.service.ts - Docker container lifecycle
-    pi.service.ts - Pi RPC interface (refine, plan, act, respondToReviews)
+    pi.service.ts - Pi RPC interface (execute Linear work, respondToReviews)
     context.service.ts - builds AGENTS.md from project graph + learnings + triage rules
     learning.service.ts - extract learnings from review patterns
     triage.service.ts - rules + LLM pass for review filtering
@@ -59,18 +59,20 @@ src/
 
 ```
 
-queued → refining → planning → acting → pr_opened → monitoring ⟷ responding → completed
-                 ╲       │        ╱
-                  ╲      ▼       ╱   (elicitation: agent asks a human)
-                   ──▶ awaiting_input ──▶ (resumes to the phase it paused from)
-                              ▲
-                              └── prompted webhook resumes the run
+queued → refining → acting → pr_opened → monitoring ⟷ responding → completed
+           ╲        ╱
+            ▼      ╱   (elicitation: agent asks a human)
+        awaiting_input ──▶ (resumes to the phase it paused from)
+              ▲
+              └── prompted webhook resumes the run
 
 ```
 
-A run starts when Linear delegates an issue to the agent (or @mentions it), which creates an **Agent Session** and fires an `AgentSessionEvent` (`action: "created"`) webhook. The webhook handler must ack within 5s, enqueue the run, and emit a `thought` activity within 10s or the session is marked unresponsive. The run goes through refine (requirements), plan (implementation plan), and act (write code, run tests, iterate). The PR opens, and the agent enters monitoring. When review comments arrive, it triages them, responds to actionable ones, and loops back to monitoring. The run completes when the PR is merged or closed.
+A run starts when Linear delegates an issue to the agent (or @mentions it), which creates an **Agent Session** and fires an `AgentSessionEvent` (`action: "created"`) webhook. The webhook handler must ack within 5s, enqueue the run, and emit a `thought` activity within 10s or the session is marked unresponsive. The run resolves the repository, starts Pi once for the implementation loop, and lets Pi research, plan internally, edit, verify, and summarize in the same working context. The PR opens, and the agent enters monitoring. When review comments arrive, it triages them, responds to actionable ones, and loops back to monitoring. The run completes when the PR is merged or closed.
 
-**Human-in-the-loop (`awaiting_input`).** At any point during `refining`/`planning`/`acting`, the agent can pause for human input — typically by posting a plan and emitting an `elicitation` activity ("approve this plan?"), then transitioning to `awaiting_input`. The run stores which phase it paused from. A subsequent `prompted` webhook (the human's reply) resumes the run back into that phase with the reply injected into context. We design the state for this now; we don't have to wire an elicitation at every phase on day one.
+**Single Pi execution loop.** Do not split normal work into separate "planning" and "acting" Pi invocations. That loses the full transcript, file-read history, and research context between phases. Pi should receive the Linear issue, inspect the repo, decide whether the task is clear enough, and either proceed directly or ask a precise question. Planning is still required, but it happens inside the same Pi run that implements the work.
+
+**Human-in-the-loop (`awaiting_input`).** At any point during `refining`/`acting`, the agent can pause for human input by emitting an `elicitation` activity with a concrete question, then transitioning to `awaiting_input`. The run stores which phase it paused from. A subsequent `prompted` webhook (the human's reply) resumes the run back into that phase with the reply injected into context. A run may ask multiple questions over time; each answer should be fed back into the same task context before continuing.
 
 There are two human-facing feedback channels:
 

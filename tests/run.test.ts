@@ -25,18 +25,15 @@ function createRun(state: RunState = "queued", overrides: Partial<Run> = {}): Ru
 describe("run state machine", () => {
   test.each([
     ["queued", "refining"],
-    ["refining", "planning"],
-    ["planning", "acting"],
+    ["refining", "acting"],
     ["acting", "pr_opened"],
     ["pr_opened", "monitoring"],
     ["monitoring", "responding"],
     ["responding", "monitoring"],
     ["monitoring", "completed"],
     ["refining", "awaiting_input"],
-    ["planning", "awaiting_input"],
     ["acting", "awaiting_input"],
     ["awaiting_input", "refining"],
-    ["awaiting_input", "planning"],
     ["awaiting_input", "acting"],
   ] satisfies Array<[RunState, RunState]>)
     ("allows %s to %s", (currentState: RunState, nextState: RunState) => {
@@ -46,7 +43,6 @@ describe("run state machine", () => {
   test.each([
     ["queued", "acting"],
     ["refining", "responding"],
-    ["planning", "monitoring"],
     ["acting", "completed"],
     ["completed", "monitoring"],
   ] satisfies Array<[RunState, RunState]>)
@@ -93,12 +89,12 @@ describe("run state machine", () => {
   });
 
   test("records the paused phase when waiting on human input", () => {
-    const run = createRun("planning");
+    const run = createRun("acting");
 
     const pausedRun = transitionRun(run, "awaiting_input");
 
     expect(pausedRun.state).toBe("awaiting_input");
-    expect(pausedRun.pausedFrom).toBe("planning");
+    expect(pausedRun.pausedFrom).toBe("acting");
   });
 
   test("resumes a paused run back into the phase it paused from", () => {

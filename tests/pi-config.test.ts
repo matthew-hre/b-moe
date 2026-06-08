@@ -90,8 +90,6 @@ describe("Pi config files", () => {
     }, loadEnv({ REDIS_HOST: "localhost", PI_TOOLS: "read,bash" }))).toEqual([
       "--mode",
       "json",
-      "--print",
-      "--no-session",
       "--offline",
       "--provider",
       "openrouter",
@@ -103,6 +101,50 @@ describe("Pi config files", () => {
       "medium",
       "--tools",
       "read,bash",
+    ]);
+  });
+
+  test("builds CLI args for a named persisted session with default tools", () => {
+    expect(buildPiArgs({
+      provider: "openrouter",
+      model: "google/gemini-3.1-flash-lite",
+      apiKey: "sk-or-v1-test",
+    }, loadEnv({ REDIS_HOST: "localhost" }), { sessionName: "run-1" })).toEqual([
+      "--mode",
+      "json",
+      "--offline",
+      "--provider",
+      "openrouter",
+      "--model",
+      "google/gemini-3.1-flash-lite",
+      "--api-key",
+      "sk-or-v1-test",
+      "--name",
+      "run-1",
+      "--tools",
+      "read,write,edit,bash,grep,find,ls",
+    ]);
+  });
+
+  test("builds CLI args for resuming a saved Pi session", () => {
+    expect(buildPiArgs({
+      provider: "openrouter",
+      model: "google/gemini-3.1-flash-lite",
+      apiKey: "sk-or-v1-test",
+    }, loadEnv({ REDIS_HOST: "localhost" }), { sessionId: "pi-session-1" })).toEqual([
+      "--mode",
+      "json",
+      "--offline",
+      "--provider",
+      "openrouter",
+      "--model",
+      "google/gemini-3.1-flash-lite",
+      "--api-key",
+      "sk-or-v1-test",
+      "--session",
+      "pi-session-1",
+      "--tools",
+      "read,write,edit,bash,grep,find,ls",
     ]);
   });
 

@@ -324,7 +324,7 @@ describe("routes", () => {
     const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
     const run = await runStore.createRun({ agentSessionId: "session-1", linearIssueId: "issue-1" });
     await runStore.transitionRun(run.id, "refining");
-    await runStore.transitionRun(run.id, "planning");
+    await runStore.transitionRun(run.id, "acting");
     const pausedRun = await runStore.transitionRun(run.id, "awaiting_input");
     const emittedActivities: Array<{ sessionId: string; body: string | undefined; type: string }> = [];
     const enqueuedRunIds: string[] = [];
@@ -359,13 +359,13 @@ describe("routes", () => {
       id: pausedRun.id,
       agentSessionId: "session-1",
       linearIssueId: "issue-1",
-      state: "planning",
+      state: "acting",
       latestPromptBody: "Use the v2 API instead",
       createdAt: pausedRun.createdAt.toISOString(),
     });
     expect(responseBody.run.pausedFrom).toBeUndefined();
     expect(emittedActivities).toEqual([
-      { sessionId: "session-1", type: "response", body: "Got it — I’ll revise the plan around that." },
+      { sessionId: "session-1", type: "response", body: "Got it — I’ll continue with that context." },
     ]);
     expect(enqueuedRunIds).toEqual([run.id]);
   });
@@ -374,7 +374,7 @@ describe("routes", () => {
     const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
     const run = await runStore.createRun({ agentSessionId: "session-1", linearIssueId: "issue-1" });
     await runStore.transitionRun(run.id, "refining");
-    await runStore.transitionRun(run.id, "planning");
+    await runStore.transitionRun(run.id, "acting");
     await runStore.transitionRun(run.id, "awaiting_input");
     const emittedActivities: Array<{ body: string | undefined; type: string }> = [];
     const linearService: LinearAgentClient = {
@@ -399,7 +399,7 @@ describe("routes", () => {
 
     expect(response.status).toBe(200);
     expect(emittedActivities).toEqual([
-      { type: "response", body: "Approved — I’ll start implementation." },
+      { type: "response", body: "Got it — I’ll continue implementation." },
     ]);
   });
 

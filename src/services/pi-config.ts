@@ -54,16 +54,27 @@ export function buildPiSettingsJson(config: ResolvedPiAgentConfig): string {
   });
 }
 
-export function buildPiArgs(config: ResolvedPiAgentConfig, env: Pick<Env, "piTools">): string[] {
-  const args = ["--mode", "json", "--print", "--no-session", "--offline", "--provider", config.provider, "--model", config.model, "--api-key", config.apiKey];
+export interface BuildPiArgsOptions {
+  readonly sessionId?: string;
+  readonly sessionName?: string;
+}
+
+const DEFAULT_PI_TOOLS = "read,write,edit,bash,grep,find,ls";
+
+export function buildPiArgs(config: ResolvedPiAgentConfig, env: Pick<Env, "piTools">, options: BuildPiArgsOptions = {}): string[] {
+  const args = ["--mode", "json", "--offline", "--provider", config.provider, "--model", config.model, "--api-key", config.apiKey];
+
+  if (options.sessionId) {
+    args.push("--session", options.sessionId);
+  } else if (options.sessionName) {
+    args.push("--name", options.sessionName);
+  }
 
   if (config.thinkingLevel) {
     args.push("--thinking", config.thinkingLevel);
   }
 
-  if (env.piTools) {
-    args.push("--tools", env.piTools);
-  }
+  args.push("--tools", env.piTools ?? DEFAULT_PI_TOOLS);
 
   return args;
 }

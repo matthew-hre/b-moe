@@ -9,7 +9,6 @@ const run: Run = {
   id: "run-1",
   agentSessionId: "session-1",
   linearIssueId: "ENG-123",
-  plan: "1. Change the code\n2. Run tests",
   state: "acting",
   createdAt: now,
   updatedAt: now,
@@ -67,6 +66,7 @@ describe("PiService", () => {
     });
 
     await expect(service.act({ run, sandbox })).resolves.toEqual({
+      kind: "completed",
       summary: "Implemented the change.",
       stopReason: "stop",
       toolCallCount: 1,
@@ -77,8 +77,6 @@ describe("PiService", () => {
       args: [
         "--mode",
         "json",
-        "--print",
-        "--no-session",
         "--offline",
         "--provider",
         "anthropic",
@@ -86,15 +84,138 @@ describe("PiService", () => {
         "claude-sonnet-4-20250514",
         "--api-key",
         "pi-key-1",
+        "--name",
+        "run-1",
         "--thinking",
         "medium",
         "--tools",
         "read,bash,edit",
       ],
     });
-    expect(rpcInput?.prompt).toContain("Implement the approved plan");
+    expect(rpcInput?.prompt).toContain("implementation mode");
     expect(rpcInput?.prompt).toContain("ENG-123");
     expect(rpcInput?.prompt).toContain("b-moe/eng-123");
+  });
+
+  test("resumes a saved Pi session when the run has a session id", async () => {
+    let rpcInput: PiRpcRunInput | undefined;
+    const service = new PiService({
+      env: loadEnv({ REDIS_HOST: "localhost", OPENROUTER_API_KEY: "sk-or-v1-test" }),
+      sandboxService: fakeSandboxService,
+      rpcRunner: {
+        async run(input) {
+          rpcInput = input;
+          return [
+            {
+              type: "session",
+              id: "pi-session-1",
+              timestamp: "2026-01-01T00:00:00.000Z",
+              cwd: "/workspace",
+            },
+            {
+              type: "agent_end",
+              messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" }],
+            },
+          ];
+        },
+      },
+    });
+
+    await expect(service.act({
+      run: { ...run, piSessionId: "pi-session-1" },
+      sandbox,
+    })).resolves.toMatchObject({
+      kind: "completed",
+      sessionId: "pi-session-1",
+    });
+    expect(rpcInput?.args).toContain("--session");
+    expect(rpcInput?.args).toContain("pi-session-1");
+    expect(rpcInput?.args).not.toContain("--name");
+  });
+
+  test("includes previous execution context and human replies in the act prompt", async () => {
+    let rpcInput: PiRpcRunInput | undefined;
+    const service = new PiService({
+      env: loadEnv({ REDIS_HOST: "localhost", OPENROUTER_API_KEY: "sk-or-v1-test" }),
+      sandboxService: fakeSandboxService,
+      rpcRunner: {
+        async run(input) {
+          rpcInput = input;
+          return [
+            {
+              type: "agent_end",
+              messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" }],
+            },
+          ];
+        },
+      },
+    });
+
+    await service.act({
+      run: {
+        ...run,
+        executionContext: "README.md is missing and package scripts are in package.json.",
+        latestPromptBody: "Use this image URL: https://example.com/bmo.png",
+      },
+      sandbox,
+    });
+
+    expect(rpcInput?.prompt).toContain("# Previous execution context");
+    expect(rpcInput?.prompt).toContain("README.md is missing");
+    expect(rpcInput?.prompt).toContain("# Human reply");
+    expect(rpcInput?.prompt).toContain("https://example.com/bmo.png");
+  });
+
+  test("reports clean progress for tool calls", async () => {
+    const progress: string[] = [];
+    const streamingSandboxService: SandboxClient = {
+      ...fakeSandboxService,
+      async execStream(_session, _command, handlers) {
+        const events = [
+          {
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [
+                { type: "toolCall", name: "bash", arguments: { command: "# Checking package scripts\nbun test" } },
+                { type: "toolCall", name: "bash", arguments: { command: "# Final verification: check requirements" } },
+                { type: "toolCall", name: "write", arguments: { path: "README.md" } },
+              ],
+            },
+          },
+          {
+            type: "tool_execution_end",
+            result: { exitCode: 1, stdout: "(pass) one test\n(fail) another test" },
+          },
+          {
+            type: "agent_end",
+            messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" }],
+          },
+        ];
+        for (const event of events) {
+          handlers.onStdoutChunk?.(`${JSON.stringify(event)}\n`);
+        }
+
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+    };
+    const service = new PiService({
+      env: loadEnv({ REDIS_HOST: "localhost", OPENROUTER_API_KEY: "sk-or-v1-test" }),
+      sandboxService: streamingSandboxService,
+    });
+
+    await service.act({
+      run,
+      sandbox,
+      onProgress: async (message) => {
+        progress.push(message);
+      },
+    });
+
+    expect(progress).toEqual([
+      "Running `bun test`",
+      "Writing `README.md`",
+    ]);
   });
 
   test("defaults the sandbox pi command to pi", async () => {
@@ -161,8 +282,6 @@ describe("PiService", () => {
     expect(rpcInput?.args).toEqual([
       "--mode",
       "json",
-      "--print",
-      "--no-session",
       "--offline",
       "--provider",
       "openrouter",
@@ -170,8 +289,12 @@ describe("PiService", () => {
       "google/gemini-3.1-flash-lite",
       "--api-key",
       "sk-or-v1-test",
+      "--name",
+      "run-1",
       "--thinking",
       "medium",
+      "--tools",
+      "read,write,edit,bash,grep,find,ls",
     ]);
   });
 
@@ -197,6 +320,7 @@ describe("PiService", () => {
     });
 
     await expect(service.act({ run, sandbox })).resolves.toEqual({
+      kind: "completed",
       summary: "Implemented via message_end.",
       stopReason: "stop",
       toolCallCount: 0,

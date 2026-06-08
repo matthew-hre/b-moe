@@ -70,9 +70,7 @@ export class GitHubService implements GitHubClient {
         title: input.run.linearIssueId ? `${input.run.linearIssueId}: B-MOE implementation` : "B-MOE implementation",
         head: input.branchName,
         base: input.baseBranch ?? "main",
-        body: [input.summary, "", input.run.plan ? `Plan:\n${input.run.plan}` : undefined]
-          .filter((part): part is string => Boolean(part))
-          .join("\n"),
+        body: input.summary,
       }),
     });
 

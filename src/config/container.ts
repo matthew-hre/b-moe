@@ -7,7 +7,6 @@ import { LinearOAuthService, type LinearOAuthClient } from "../services/linear-o
 import { LinearService, type LinearAgentClient } from "../services/linear.service";
 import { LlmService, type LlmClient } from "../services/llm.service";
 import { AgentSessionTriggerService } from "../services/agent-session-trigger.service";
-import { PlanningService, type PlanningClient } from "../services/planning.service";
 import { SandboxService, type SandboxClient } from "../services/sandbox.service";
 import { RepositoryService, type RepositoryClient } from "../services/repository.service";
 import { PiService, type PiClient } from "../services/pi.service";
@@ -27,7 +26,6 @@ export interface Cradle {
   readonly linearOAuthService: LinearOAuthClient;
   readonly linearService: LinearAgentClient;
   readonly llmService: LlmClient;
-  readonly planningService: PlanningClient;
   readonly repositoryService: RepositoryClient;
   readonly sandboxService: SandboxClient;
   readonly piService: PiClient;
@@ -60,7 +58,6 @@ export function createDiContainer(env: Env = loadEnv()): AwilixContainer<Cradle>
     llmService: asClass(LlmService)
       .singleton()
       .inject(() => ({ createModel: undefined, generateTextFn: generateText })),
-    planningService: asClass(PlanningService).singleton(),
     repositoryService: asClass(RepositoryService).singleton(),
     sandboxService: asClass(SandboxService)
       .singleton()

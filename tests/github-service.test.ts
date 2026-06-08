@@ -8,7 +8,6 @@ const run: Run = {
   id: "run-1",
   agentSessionId: "session-1",
   linearIssueId: "ENG-123",
-  plan: "1. Implement it",
   state: "acting",
   createdAt: now,
   updatedAt: now,
