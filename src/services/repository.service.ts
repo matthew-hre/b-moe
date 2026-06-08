@@ -1,7 +1,10 @@
 import { mkdir, stat } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
+import { createLogger } from "../logger";
 import type { Run } from "../models/run";
 import type { Env } from "../config/env";
+
+const logger = createLogger("command-runner");
 export interface RepositoryInfo {
   readonly url: string;
   readonly baseBranch?: string;
@@ -42,7 +45,7 @@ export interface RepositoryServiceDependencies {
 
 export class BunCommandRunner implements CommandRunner {
   async run(command: readonly string[], options: CommandRunnerOptions = {}): Promise<void> {
-    console.log(`[command-runner] running ${sanitizeCommand(command).join(" ")} cwd=${options.cwd ?? process.cwd()}`);
+    logger.info(`running ${sanitizeCommand(command).join(" ")} cwd=${options.cwd ?? process.cwd()}`);
     const [program, ...args] = command;
     const result = spawnSync(program, args, {
       cwd: options.cwd,

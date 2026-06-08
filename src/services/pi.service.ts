@@ -1,4 +1,5 @@
 import type { Run } from "../models/run";
+import { createLogger } from "../logger";
 import type { Env } from "../config/env";
 import type { SandboxClient, SandboxSession } from "./sandbox.service";
 import {
@@ -8,6 +9,8 @@ import {
   resolvePiAgentConfig,
 } from "./pi-config";
 import { buildActPrompt, parseActResponse } from "./pi-prompts";
+
+const logger = createLogger("pi-service");
 
 export interface PiAgentResult {
   readonly text: string;
@@ -143,8 +146,8 @@ export class SandboxPiRpcRunner implements PiRpcRunner {
   constructor(private readonly sandboxService: SandboxClient) {}
 
   async run(input: PiRpcRunInput): Promise<readonly unknown[]> {
-    console.log(
-      `[pi-service] exec ${sanitizePiExecLog(input.command, input.args)} containerId=${input.sandbox.containerId} cwd=${input.sandbox.workingDirectory}`,
+    logger.info(
+      `exec ${sanitizePiExecLog(input.command, input.args)} containerId=${input.sandbox.containerId} cwd=${input.sandbox.workingDirectory}`,
     );
     const parser = createPiEventParser(input);
     const result = await this.sandboxService.execStream(
@@ -159,8 +162,8 @@ export class SandboxPiRpcRunner implements PiRpcRunner {
 
     await parser.flush();
 
-    console.log(
-      `[pi-service] container exec finished code=${result.exitCode} events=${parser.events.length} stderr=${result.stderr.slice(0, 500)}`,
+    logger.info(
+      `container exec finished code=${result.exitCode} events=${parser.events.length} stderr=${result.stderr.slice(0, 500)}`,
     );
 
     if (result.exitCode !== 0) {
@@ -204,7 +207,7 @@ function createPiEventParser(input: Pick<PiRpcRunInput, "onThought" | "onProgres
         const event = JSON.parse(line);
         events.push(event);
         if (isRecord(event)) {
-          console.log(`[pi-service] rpc event type=${String(event.type ?? "unknown")}`);
+          logger.debug(`rpc event type=${String(event.type ?? "unknown")}`);
           if (isMessageEndEvent(event) && isAssistantMessage(event.message)) {
             for (const thought of extractThinking([event.message])) {
               const promise = input.onThought?.(thought);
@@ -230,7 +233,7 @@ function createPiEventParser(input: Pick<PiRpcRunInput, "onThought" | "onProgres
           }
         }
       } catch {
-        console.log(`[pi-service] non-json stdout: ${line.slice(0, 500)}`);
+        logger.warn(`non-json stdout: ${line.slice(0, 500)}`);
       }
     }
   };

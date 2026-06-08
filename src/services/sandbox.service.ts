@@ -1,4 +1,5 @@
 import type { Run, RunSandbox } from "../models/run";
+import { createLogger } from "../logger";
 import type { RunStore } from "../store/run.store";
 import type { Env } from "../config/env";
 import type { GitHubClient } from "./github.service";
@@ -9,6 +10,8 @@ import {
 } from "./repository.service";
 import type { ContainerExecOptions, ContainerExecResult, ContainerExecStreamHandlers, DockerEngine } from "./docker-engine";
 import { createDockerEngine } from "./docker-engine";
+
+const logger = createLogger("sandbox-service");
 
 export const SANDBOX_WORKSPACE_DIR = "/workspace";
 
@@ -80,7 +83,7 @@ export class SandboxService implements SandboxClient {
   startProvisioning(run: Run): void {
     void this.ensureProvisioning(run.id).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
-      console.log(`[sandbox-service] provisioning failed runId=${run.id}: ${message}`);
+      logger.error(`provisioning failed runId=${run.id}: ${message}`);
     });
   }
 
@@ -134,7 +137,7 @@ export class SandboxService implements SandboxClient {
   }
 
   async destroySession(session: SandboxSession): Promise<void> {
-    console.log(`[sandbox-service] destroying sandbox runId=${session.runId} containerId=${session.containerId}`);
+    logger.info(`destroying sandbox runId=${session.runId} containerId=${session.containerId}`);
     await this.dockerEngine.removeContainer(session.containerId);
     this.provisioningPromises.delete(session.runId);
   }
@@ -146,7 +149,7 @@ export class SandboxService implements SandboxClient {
       return;
     }
 
-    console.log(`[sandbox-service] destroying sandbox for stopped run runId=${run.id} containerId=${containerId}`);
+    logger.info(`destroying sandbox for stopped run runId=${run.id} containerId=${containerId}`);
     await this.dockerEngine.removeContainer(containerId);
     this.provisioningPromises.delete(run.id);
   }
@@ -186,7 +189,7 @@ export class SandboxService implements SandboxClient {
         throw new Error(run.sandbox.error ?? `Sandbox provisioning failed for run ${runId}`);
       }
 
-      console.log(`[sandbox-service] retrying failed workspace prep runId=${runId}`);
+      logger.info(`retrying failed workspace prep runId=${runId}`);
       await this.saveSandboxState(runId, {
         containerId: run.sandbox.containerId,
         status: "provisioning",
@@ -204,7 +207,7 @@ export class SandboxService implements SandboxClient {
     let containerId = run.sandbox?.containerId;
 
     if (!containerId) {
-      console.log(`[sandbox-service] creating container runId=${runId} image=${this.env.sandboxImage}`);
+      logger.info(`creating container runId=${runId} image=${this.env.sandboxImage}`);
       containerId = await this.dockerEngine.createContainer({
         name: `b-moe-sandbox-${run.id}`,
         image: this.env.sandboxImage,
@@ -216,7 +219,7 @@ export class SandboxService implements SandboxClient {
         status: "provisioning",
         workspacePrepared: false,
       });
-      console.log(`[sandbox-service] container started runId=${runId} containerId=${containerId}`);
+      logger.info(`container started runId=${runId} containerId=${containerId}`);
     }
 
     if (run.repoUrl) {
@@ -236,8 +239,8 @@ export class SandboxService implements SandboxClient {
     const branchName = createBranchName(run);
     const cloneUrl = await this.getCloneUrl(run.repoUrl);
 
-    console.log(
-      `[sandbox-service] preparing workspace runId=${run.id} containerId=${run.sandbox.containerId} repoUrl=${run.repoUrl}`,
+    logger.info(
+      `preparing workspace runId=${run.id} containerId=${run.sandbox.containerId} repoUrl=${run.repoUrl}`,
     );
 
     try {
@@ -268,7 +271,7 @@ export class SandboxService implements SandboxClient {
         workspacePrepared: true,
         branchName,
       });
-      console.log(`[sandbox-service] workspace ready runId=${run.id} branch=${branchName}`);
+      logger.info(`workspace ready runId=${run.id} branch=${branchName}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await this.saveSandboxState(run.id, {

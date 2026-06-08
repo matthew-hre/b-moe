@@ -1,5 +1,6 @@
 import { Worker, type ConnectionOptions, type Job } from "bullmq";
 import { AGENT_RUN_QUEUE_NAME, type AgentRunJobData } from "../queue/queue";
+import { createLogger } from "../logger";
 import type { Run } from "../models/run";
 import type { LinearAgentClient } from "../services/linear.service";
 import type { SandboxClient, SandboxSession } from "../services/sandbox.service";
@@ -8,6 +9,8 @@ import type { GitClient } from "../services/git.service";
 import type { GitHubClient } from "../services/github.service";
 import type { RedisClient } from "../store/redis";
 import type { RunStore } from "../store/run.store";
+
+const logger = createLogger("agent-run-worker");
 
 export interface AgentRunWorkerDependencies {
   readonly linearService: LinearAgentClient;
@@ -38,12 +41,10 @@ export class AgentRunWorker {
     );
 
     this.worker.on("completed", (job) => {
-      console.log(`[agent-run-worker] completed job id=${job.id ?? "unknown"} runId=${job.data.runId}`);
+      logger.info(`completed job id=${job.id ?? "unknown"} runId=${job.data.runId}`);
     });
     this.worker.on("failed", (job, error) => {
-      console.log(
-        `[agent-run-worker] failed job id=${job?.id ?? "unknown"} runId=${job?.data.runId ?? "unknown"}: ${error.message}`,
-      );
+      logger.error(`failed job id=${job?.id ?? "unknown"} runId=${job?.data.runId ?? "unknown"}: ${error.message}`);
     });
   }
 
@@ -72,7 +73,7 @@ export async function processAgentRun(
     run.state !== "refining" &&
     run.state !== "acting"
   ) {
-    console.log(`[agent-run-worker] run id=${runId} is ${run.state}; skipping`);
+    logger.info(`run id=${runId} is ${run.state}; skipping`);
     return;
   }
 
@@ -118,7 +119,7 @@ async function processActing(
   run: Run,
   { linearService, sandboxService, piService, gitService, githubService, runStore }: Pick<AgentRunWorkerDependencies, "linearService" | "sandboxService" | "piService" | "gitService" | "githubService" | "runStore">,
 ): Promise<void> {
-  console.log(`[agent-run-worker] acting start runId=${run.id} repoUrl=${run.repoUrl ?? "unset"}`);
+  logger.info(`acting start runId=${run.id} repoUrl=${run.repoUrl ?? "unset"}`);
 
   let sandbox: SandboxSession | undefined;
   let shouldDestroySandbox = true;
@@ -154,7 +155,7 @@ async function processActing(
       sandbox,
       baseBranch: run.baseBranch,
     }));
-    console.log(`[agent-run-worker] git summary runId=${run.id}: ${gitSummary}`);
+    logger.info(`git summary runId=${run.id}: ${gitSummary}`);
     await runStep(run.id, "commit pending changes", () => gitService.commitAll({
       sandbox,
       message: run.linearIssueId ? `${run.linearIssueId}: B-MOE changes` : "B-MOE changes",
@@ -228,7 +229,7 @@ async function emitImplementationError(
     });
   } catch (activityError) {
     const activityMessage = activityError instanceof Error ? activityError.message : String(activityError);
-    console.log(`[agent-run-worker] failed to emit error activity runId=${run.id}: ${activityMessage}`);
+    logger.error(`failed to emit error activity runId=${run.id}: ${activityMessage}`);
   }
 
   const latestRun = await runStore.getRun(run.id);
@@ -239,16 +240,16 @@ async function emitImplementationError(
 }
 
 async function runStep<T>(runId: string, step: string, action: () => Promise<T>): Promise<T> {
-  console.log(`[agent-run-worker] ${step} start runId=${runId}`);
+  logger.info(`${step} start runId=${runId}`);
 
   try {
     const result = await action();
-    console.log(`[agent-run-worker] ${step} done runId=${runId}`);
+    logger.info(`${step} done runId=${runId}`);
 
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.log(`[agent-run-worker] ${step} failed runId=${runId}: ${message}`);
+    logger.error(`${step} failed runId=${runId}: ${message}`);
     throw new Error(`${step} failed: ${message}`, { cause: error });
   }
 }

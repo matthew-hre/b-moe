@@ -1,4 +1,5 @@
 import { canTransitionRun, resumeRun, type Run } from "../models/run";
+import { createLogger } from "../logger";
 import type { getAgentSessionTrigger } from "../models/linear";
 import type { LinearAgentClient } from "./linear.service";
 import type { RunStore } from "../store/run.store";
@@ -6,6 +7,8 @@ import type { AgentRunQueue } from "../queue/queue";
 import { isPlanApproval } from "../workers/agent-run.worker";
 import type { RepositoryClient } from "./repository.service";
 import type { SandboxClient } from "./sandbox.service";
+
+const logger = createLogger("agent-session-trigger");
 
 export interface AgentSessionTriggerResponse {
   readonly run?: Run;
@@ -39,12 +42,12 @@ export class AgentSessionTriggerService {
     trigger: ReturnType<typeof getAgentSessionTrigger>,
   ): Promise<AgentSessionTriggerResponse> {
     if (!trigger) {
-      console.log("[agent-session-trigger] trigger is null; ignoring");
+      logger.info("trigger is null; ignoring");
       return { ignored: true };
     }
 
-    console.log(
-      `[agent-session-trigger] handling action=${trigger.action} agentSessionId=${trigger.agentSessionId} issueId=${trigger.linearIssueId ?? "none"} stopRequested=${trigger.stopRequested}`,
+    logger.info(
+      `handling action=${trigger.action} agentSessionId=${trigger.agentSessionId} issueId=${trigger.linearIssueId ?? "none"} stopRequested=${trigger.stopRequested}`,
     );
 
     if (trigger.stopRequested) {
@@ -59,7 +62,7 @@ export class AgentSessionTriggerService {
       return this.handlePrompted(trigger);
     }
 
-    console.log(`[agent-session-trigger] unknown action=${trigger.action}; ignoring`);
+    logger.warn(`unknown action=${trigger.action}; ignoring`);
     return { ignored: true };
   }
 
@@ -73,8 +76,8 @@ export class AgentSessionTriggerService {
     const run = await this.runStore.getRunByAgentSession(trigger.agentSessionId);
 
     if (!run) {
-      console.log(
-        `[agent-session-trigger] stop ignored; no run for agentSessionId=${trigger.agentSessionId}`,
+      logger.info(
+        `stop ignored; no run for agentSessionId=${trigger.agentSessionId}`,
       );
       return { ignored: true };
     }
@@ -85,7 +88,7 @@ export class AgentSessionTriggerService {
 
     await this.sandboxService.destroyRunSandbox(run).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
-      console.log(`[agent-session-trigger] failed to destroy sandbox for run id=${run.id}: ${message}`);
+      logger.error(`failed to destroy sandbox for run id=${run.id}: ${message}`);
     });
 
     const completedRun = canStopRun(run)
@@ -110,8 +113,8 @@ export class AgentSessionTriggerService {
     const existingRun = await this.runStore.getRunByAgentSession(trigger.agentSessionId);
 
     if (existingRun) {
-      console.log(
-        `[agent-session-trigger] existing run found for agentSessionId=${trigger.agentSessionId}`,
+      logger.info(
+        `existing run found for agentSessionId=${trigger.agentSessionId}`,
       );
       return { run: existingRun };
     }
@@ -128,18 +131,18 @@ export class AgentSessionTriggerService {
       repositorySelectionQuestion: repositoryResolution.kind === "needs_input" ? repositoryResolution.question : undefined,
     });
 
-    console.log(`[agent-session-trigger] created run id=${run.id}; emitting greeting thought`);
+    logger.info(`created run id=${run.id}; emitting greeting thought`);
     await this.linearService.emitActivity(trigger.agentSessionId, {
       type: "thought",
       body: "Hi, I'm B-MOE!",
     });
-    console.log(
-      `[agent-session-trigger] emitted greeting thought for agentSessionId=${trigger.agentSessionId}`,
+    logger.info(
+      `emitted greeting thought for agentSessionId=${trigger.agentSessionId}`,
     );
 
     this.sandboxService.startProvisioning(run);
     await this.agentRunQueue.enqueueRun(run.id);
-    console.log(`[agent-session-trigger] enqueued run id=${run.id}`);
+    logger.info(`enqueued run id=${run.id}`);
 
     return { run };
   }
@@ -154,15 +157,15 @@ export class AgentSessionTriggerService {
     const run = await this.runStore.getRunByAgentSession(trigger.agentSessionId);
 
     if (!run) {
-      console.log(
-        `[agent-session-trigger] prompted webhook ignored; no run for agentSessionId=${trigger.agentSessionId}`,
+      logger.info(
+        `prompted webhook ignored; no run for agentSessionId=${trigger.agentSessionId}`,
       );
       return { ignored: true };
     }
 
     if (run.state !== "awaiting_input") {
-      console.log(
-        `[agent-session-trigger] prompted webhook recorded but not enqueued; run id=${run.id} state=${run.state}`,
+      logger.info(
+        `prompted webhook recorded but not enqueued; run id=${run.id} state=${run.state}`,
       );
       await this.runStore.saveRun({ ...run, latestPromptBody: trigger.promptBody });
       return { run };
@@ -187,13 +190,13 @@ export class AgentSessionTriggerService {
           : (repositoryResolution?.question ?? resumedRun.repositorySelectionQuestion),
     });
 
-    console.log(`[agent-session-trigger] prompted run id=${updatedRun.id}; emitting response`);
+    logger.info(`prompted run id=${updatedRun.id}; emitting response`);
     await this.linearService.emitActivity(trigger.agentSessionId, {
       type: "response",
       body: getPromptedResponseBody(trigger.promptBody, repositoryResolution?.kind),
     });
-    console.log(
-      `[agent-session-trigger] emitted greeting response for agentSessionId=${trigger.agentSessionId}`,
+    logger.info(
+      `emitted greeting response for agentSessionId=${trigger.agentSessionId}`,
     );
 
     if (!updatedRun.repositorySelectionQuestion) {
@@ -201,7 +204,7 @@ export class AgentSessionTriggerService {
     }
 
     await this.agentRunQueue.enqueueRun(updatedRun.id);
-    console.log(`[agent-session-trigger] enqueued prompted run id=${updatedRun.id}`);
+    logger.info(`enqueued prompted run id=${updatedRun.id}`);
 
     return { run: updatedRun };
   }

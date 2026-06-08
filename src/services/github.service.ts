@@ -1,6 +1,9 @@
 import { createSign } from "node:crypto";
+import { createLogger } from "../logger";
 import type { Env } from "../config/env";
 import type { Run } from "../models/run";
+
+const logger = createLogger("github-service");
 
 export interface CreatePullRequestInput {
   readonly run: Run;
@@ -85,7 +88,7 @@ export class GitHubService implements GitHubClient {
 
   async getAccessToken(): Promise<string> {
     if (this.hasGitHubAppConfig()) {
-      console.log(`[github-service] creating GitHub App installation token installationId=${this.env.githubAppInstallationId}`);
+      logger.info(`creating GitHub App installation token installationId=${this.env.githubAppInstallationId}`);
       const jwt = await this.createAppJwt();
       const response = await this.fetch(
         `https://api.github.com/app/installations/${this.env.githubAppInstallationId}/access_tokens`,
@@ -105,7 +108,7 @@ export class GitHubService implements GitHubClient {
 
       const body = (await response.json()) as { token: string };
 
-      console.log(`[github-service] created GitHub App installation token installationId=${this.env.githubAppInstallationId}`);
+      logger.info(`created GitHub App installation token installationId=${this.env.githubAppInstallationId}`);
 
       return body.token;
     }
