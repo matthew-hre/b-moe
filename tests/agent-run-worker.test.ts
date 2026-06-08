@@ -81,21 +81,11 @@ describe("processAgentRun", () => {
       state: "pr_opened",
       pullRequest: { url: "https://github.com/acme/repo/pull/1" },
     });
-    expect(emittedActivities.slice(0, 3)).toEqual([
-      {
-        sessionId: "session-1",
-        type: "thought",
-        body: "I’ve started refining the issue and gathering context.",
-      },
+    expect(emittedActivities.slice(0, 1)).toEqual([
       {
         sessionId: "session-1",
         type: "thought",
         body: "Starting repository research and implementation in Pi.",
-      },
-      {
-        sessionId: "session-1",
-        type: "thought",
-        body: "Starting implementation in an isolated sandbox.",
       },
     ]);
   });
@@ -209,7 +199,6 @@ describe("processAgentRun", () => {
     });
     expect(destroyed).toBe(false);
     expect(emittedActivities).toEqual([
-      { type: "thought", body: "Starting implementation in an isolated sandbox." },
       {
         type: "elicitation",
         body: "https://linear.app/acme/profiles/matthew Which image URL should I use for BMO?",
@@ -294,7 +283,6 @@ describe("AgentRunWorker", () => {
     });
 
     expect(events).toEqual([
-      "thought:Starting implementation in an isolated sandbox.",
       "sandbox:ensure",
       "pi:act",
       "thought:Committed any pending workspace changes.",
@@ -345,7 +333,7 @@ describe("AgentRunWorker", () => {
     expect(createdPullRequest).toBe(false);
     expect(emittedActivities[emittedActivities.length - 1]).toEqual({
       type: "response",
-      body: "Pi acted on run-1\n\nPi completed but did not produce any git changes, so I’m not opening a PR yet.",
+      body: "Pi acted on run-1\n\nPi completed but did not produce any git changes, so I'm not opening a PR yet.",
     });
   });
 });
