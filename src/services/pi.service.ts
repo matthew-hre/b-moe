@@ -1,7 +1,7 @@
 import type { Run } from "../models/run";
 import { createLogger } from "../logger";
 import type { Env } from "../config/env";
-import type { SandboxClient, SandboxSession } from "./sandbox.service";
+import type { SandboxClient, SandboxExecResult, SandboxSession } from "./sandbox.service";
 import {
   buildPiArgs,
   injectPiAgentConfig,
@@ -9,6 +9,7 @@ import {
   resolvePiAgentConfig,
 } from "./pi-config";
 import { buildActPrompt, parseActResponse } from "./pi-prompts";
+import type { SteeringStore } from "../store/steering.store";
 
 const logger = createLogger("pi-service");
 
@@ -38,16 +39,26 @@ export type PiActResult =
 
 export interface PiClient {
   act(input: { run: Run; sandbox: SandboxSession; onThought?: (thought: string) => Promise<void>; onProgress?: (message: string) => Promise<void> }): Promise<PiActResult>;
+  steer(input: { runId: string; message: string }): Promise<boolean>;
 }
 
 export interface PiRpcRunInput {
   readonly sandbox: SandboxSession;
+  readonly runId: string;
   readonly prompt: string;
   readonly command: string;
   readonly args: readonly string[];
-    readonly sessionId?: string;
+  readonly sessionId?: string;
   readonly onThought?: (thought: string) => Promise<void>;
   readonly onProgress?: (message: string) => Promise<void>;
+  readonly onReady?: (session: PiRpcSession) => Promise<void>;
+}
+
+export interface PiRpcSession {
+  prompt(message: string): Promise<void>;
+  steer(message: string): Promise<void>;
+  followUp(message: string): Promise<void>;
+  abort(): Promise<void>;
 }
 
 export interface PiRpcRunner {
@@ -57,17 +68,21 @@ export interface PiRpcRunner {
 export interface PiServiceDependencies {
   readonly env: Env;
   readonly sandboxService: SandboxClient;
+  readonly steeringStore?: SteeringStore;
   readonly rpcRunner?: PiRpcRunner;
 }
 
 export class PiService implements PiClient {
   private readonly env: Env;
   private readonly sandboxService: SandboxClient;
+  private readonly steeringStore?: SteeringStore;
   private readonly rpcRunner: PiRpcRunner;
+  private readonly activeSessions = new Map<string, PiRpcSession>();
 
-  constructor({ env, sandboxService, rpcRunner }: PiServiceDependencies) {
+  constructor({ env, sandboxService, steeringStore, rpcRunner }: PiServiceDependencies) {
     this.env = env;
     this.sandboxService = sandboxService;
+    this.steeringStore = steeringStore;
     this.rpcRunner = rpcRunner ?? new SandboxPiRpcRunner(sandboxService);
   }
 
@@ -76,6 +91,7 @@ export class PiService implements PiClient {
       sandbox,
       prompt: buildActPrompt(run, sandbox),
       sessionId: run.piSessionId,
+      runId: run.id,
       onThought,
       onProgress,
     });
@@ -89,16 +105,30 @@ export class PiService implements PiClient {
     return result.sessionId ? { ...response, sessionId: result.sessionId } : response;
   }
 
+  async steer({ runId, message }: { runId: string; message: string }): Promise<boolean> {
+    const session = this.activeSessions.get(runId);
+
+    if (!session) {
+      return false;
+    }
+
+    await session.steer(message);
+
+    return true;
+  }
+
   private async runPiAgent({
     sandbox,
     prompt,
     sessionId,
+    runId,
     onThought,
     onProgress,
   }: {
     readonly sandbox: SandboxSession;
     readonly prompt: string;
     readonly sessionId?: string;
+    readonly runId: string;
     readonly onThought?: (thought: string) => Promise<void>;
     readonly onProgress?: (message: string) => Promise<void>;
   }): Promise<PiAgentResult> {
@@ -110,17 +140,40 @@ export class PiService implements PiClient {
 
     await injectPiAgentConfig(this.sandboxService, sandbox, config);
 
-    const events = await this.rpcRunner.run({
-      sandbox,
-      prompt,
-      command: this.env.piCommand,
-      args: buildPiArgs(config, this.env, {
-        sessionId,
-        sessionName: sandbox.runId,
-      }),
-      onThought,
-      onProgress,
-    });
+    let pendingSteeringPoll: ReturnType<typeof setInterval> | undefined;
+    let events: readonly unknown[];
+
+    try {
+      events = await this.rpcRunner.run({
+        sandbox,
+        runId,
+        prompt,
+        command: this.env.piCommand,
+        args: buildPiArgs(config, this.env, {
+          mode: "rpc",
+          sessionId,
+          sessionName: sandbox.runId,
+        }),
+        onThought,
+        onProgress,
+        onReady: async (session) => {
+          this.activeSessions.set(runId, session);
+          await this.flushPendingSteering(runId, session);
+          pendingSteeringPoll = setInterval(() => {
+            void this.flushPendingSteering(runId, session).catch((error) => {
+              const message = error instanceof Error ? error.message : String(error);
+              logger.error(`failed to flush pending steering runId=${runId}: ${message}`);
+            });
+          }, 2000);
+        },
+      });
+    } finally {
+      if (pendingSteeringPoll) {
+        clearInterval(pendingSteeringPoll);
+      }
+      this.activeSessions.delete(runId);
+    }
+
     const sessionEvent = events.find(isSessionEvent);
     const agentEnd = events.find(isAgentEndEvent);
     const messages = agentEnd?.messages ?? events.filter(isMessageEndEvent).map((event) => event.message);
@@ -140,6 +193,15 @@ export class PiService implements PiClient {
       sessionId: sessionEvent?.id,
     };
   }
+
+  private async flushPendingSteering(runId: string, session: PiRpcSession): Promise<void> {
+    const messages = await this.steeringStore?.drain(runId) ?? [];
+
+    for (const message of messages) {
+      logger.info(`delivering queued steering runId=${runId} messageId=${message.id}`);
+      await session.steer(message.body);
+    }
+  }
 }
 
 export class SandboxPiRpcRunner implements PiRpcRunner {
@@ -149,16 +211,44 @@ export class SandboxPiRpcRunner implements PiRpcRunner {
     logger.info(
       `exec ${sanitizePiExecLog(input.command, input.args)} containerId=${input.sandbox.containerId} cwd=${input.sandbox.workingDirectory}`,
     );
-    const parser = createPiEventParser(input);
-    const result = await this.sandboxService.execStream(
+    const fifoPath = `/tmp/b-moe-pi-${input.runId}.in`;
+    const pidPath = `/tmp/b-moe-pi-${input.runId}.pid`;
+    await this.prepareRpcPipe(input.sandbox, fifoPath, pidPath);
+    let stoppedAfterAgentEnd = false;
+    const parser = createPiEventParser({
+      ...input,
+      onAgentEnd: () => {
+        stoppedAfterAgentEnd = true;
+        void this.stopRpcProcess(input.sandbox, pidPath).catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.warn(`failed to stop Pi RPC after agent_end runId=${input.runId}: ${message}`);
+        });
+      },
+    });
+    const command = buildRpcShellCommand(input.command, input.args, fifoPath, pidPath);
+    const resultPromise = this.sandboxService.execStream(
       input.sandbox,
-      [input.command, ...input.args, input.prompt],
+      ["bash", "-ec", command],
       {
         onStdoutChunk: (chunk) => {
           parser.consume(chunk);
         },
       },
     );
+    const session = new SandboxPiRpcSession(this.sandboxService, input.sandbox, fifoPath);
+    let result: SandboxExecResult;
+
+    try {
+      await session.prompt(input.prompt);
+      await input.onReady?.(session);
+      result = await resultPromise;
+    } catch (error) {
+      await this.stopRpcProcess(input.sandbox, pidPath);
+      await resultPromise.catch(() => undefined);
+      throw error;
+    } finally {
+      await this.cleanupRpcPipe(input.sandbox, fifoPath, pidPath);
+    }
 
     await parser.flush();
 
@@ -166,11 +256,79 @@ export class SandboxPiRpcRunner implements PiRpcRunner {
       `container exec finished code=${result.exitCode} events=${parser.events.length} stderr=${result.stderr.slice(0, 500)}`,
     );
 
-    if (result.exitCode !== 0) {
+    if (result.exitCode !== 0 && !stoppedAfterAgentEnd) {
       throw new Error(`Pi RPC exited with code ${result.exitCode}: ${result.stderr}`);
     }
 
     return parser.events;
+  }
+
+  private async prepareRpcPipe(sandbox: SandboxSession, fifoPath: string, pidPath: string): Promise<void> {
+    const result = await this.sandboxService.exec(
+      sandbox,
+      ["bash", "-ec", `rm -f ${shellQuote(fifoPath)} ${shellQuote(pidPath)} && mkfifo ${shellQuote(fifoPath)}`],
+      { workingDirectory: "/" },
+    );
+
+    if (result.exitCode !== 0) {
+      throw new Error(`Failed to prepare Pi RPC pipe: ${result.stderr || result.stdout}`);
+    }
+  }
+
+  private async stopRpcProcess(sandbox: SandboxSession, pidPath: string): Promise<void> {
+    await this.sandboxService.exec(
+      sandbox,
+      ["bash", "-ec", `[ ! -s ${shellQuote(pidPath)} ] || kill "$(cat ${shellQuote(pidPath)})" 2>/dev/null || true`],
+      { workingDirectory: "/" },
+    );
+  }
+
+  private async cleanupRpcPipe(sandbox: SandboxSession, fifoPath: string, pidPath: string): Promise<void> {
+    await this.sandboxService.exec(
+      sandbox,
+      ["bash", "-ec", `rm -f ${shellQuote(fifoPath)} ${shellQuote(pidPath)}`],
+      { workingDirectory: "/" },
+    ).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(`failed to cleanup Pi RPC pipe runId=${sandbox.runId}: ${message}`);
+    });
+  }
+}
+
+class SandboxPiRpcSession implements PiRpcSession {
+  constructor(
+    private readonly sandboxService: SandboxClient,
+    private readonly sandbox: SandboxSession,
+    private readonly fifoPath: string,
+  ) {}
+
+  async prompt(message: string): Promise<void> {
+    await this.send({ type: "prompt", message });
+  }
+
+  async steer(message: string): Promise<void> {
+    await this.send({ type: "steer", message });
+  }
+
+  async followUp(message: string): Promise<void> {
+    await this.send({ type: "follow_up", message });
+  }
+
+  async abort(): Promise<void> {
+    await this.send({ type: "abort" });
+  }
+
+  private async send(command: Record<string, unknown>): Promise<void> {
+    const line = JSON.stringify(command);
+    const result = await this.sandboxService.exec(
+      this.sandbox,
+      ["bash", "-ec", `printf '%s\\n' ${shellQuote(line)} > ${shellQuote(this.fifoPath)}`],
+      { workingDirectory: "/" },
+    );
+
+    if (result.exitCode !== 0) {
+      throw new Error(`Failed to send Pi RPC command: ${result.stderr || result.stdout}`);
+    }
   }
 }
 
@@ -180,7 +338,7 @@ interface PiEventParser {
   flush(): Promise<void>;
 }
 
-function createPiEventParser(input: Pick<PiRpcRunInput, "onThought" | "onProgress">): PiEventParser {
+function createPiEventParser(input: Pick<PiRpcRunInput, "onThought" | "onProgress"> & { readonly onAgentEnd?: () => void }): PiEventParser {
   const events: unknown[] = [];
   const thoughtPromises: Promise<void>[] = [];
   const progressPromises: Promise<void>[] = [];
@@ -208,6 +366,9 @@ function createPiEventParser(input: Pick<PiRpcRunInput, "onThought" | "onProgres
         events.push(event);
         if (isRecord(event)) {
           logger.debug(`rpc event type=${String(event.type ?? "unknown")}`);
+          if (isAgentEndEvent(event)) {
+            input.onAgentEnd?.();
+          }
           if (isMessageEndEvent(event) && isAssistantMessage(event.message)) {
             for (const thought of extractThinking([event.message])) {
               const promise = input.onThought?.(thought);
@@ -245,6 +406,19 @@ function createPiEventParser(input: Pick<PiRpcRunInput, "onThought" | "onProgres
       await Promise.all([...thoughtPromises, ...progressPromises]);
     },
   };
+}
+
+function buildRpcShellCommand(command: string, args: readonly string[], fifoPath: string, pidPath: string): string {
+  return [
+    `exec 3<>${shellQuote(fifoPath)}`,
+    `${[command, ...args].map(shellQuote).join(" ")} < ${shellQuote(fifoPath)} &`,
+    `echo $! > ${shellQuote(pidPath)}`,
+    "wait $!",
+  ].join("\n");
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function sanitizePiExecLog(command: string, args: readonly string[]): string {

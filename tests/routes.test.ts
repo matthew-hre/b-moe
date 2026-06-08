@@ -10,8 +10,10 @@ import { AgentSessionTriggerService } from "../src/services/agent-session-trigge
 import type { AgentRunQueue } from "../src/queue/queue";
 import type { RepositoryClient } from "../src/services/repository.service";
 import type { SandboxClient } from "../src/services/sandbox.service";
+import type { PiClient } from "../src/services/pi.service";
 import { InMemoryRunStore } from "../src/store/run.store";
 import { InMemoryLinearInstallStore } from "../src/store/linear-install.store";
+import { InMemorySteeringStore, type SteeringStore } from "../src/store/steering.store";
 
 const defaultLinearOAuthService: LinearOAuthClient = {
   async installFromAuthorizationCode() {
@@ -70,12 +72,23 @@ const sandboxService: SandboxClient = {
   async destroyRunSandbox() {},
 };
 
+const noopPiService: PiClient = {
+  async act() {
+    return { kind: "completed", summary: "Done.", stopReason: "stop", toolCallCount: 0 };
+  },
+  async steer() {
+    return false;
+  },
+};
+
 function createTestRoutes(
   runStore = new InMemoryRunStore({ createRunId: () => "run-1" }),
   env: Env = loadEnv({ REDIS_HOST: "localhost" }),
   linearOAuthService = defaultLinearOAuthService,
   linearService: LinearAgentClient = noopLinearService,
   agentRunQueue: AgentRunQueue = noopAgentRunQueue,
+  piService: PiClient = noopPiService,
+  steeringStore: SteeringStore = new InMemorySteeringStore(),
 ): ReturnType<typeof createRoutes> {
   const container = createContainer<Cradle>();
 
@@ -87,8 +100,10 @@ function createTestRoutes(
     agentRunQueue: asValue(agentRunQueue),
     runStore: asValue(runStore),
     linearInstallStore: asValue(new InMemoryLinearInstallStore()),
+    piService: asValue(piService),
+    steeringStore: asValue(steeringStore),
     repositoryService: asValue(repositoryService),
-    agentSessionTriggerService: asValue(new AgentSessionTriggerService({ linearService, runStore, agentRunQueue, repositoryService, sandboxService })),
+    agentSessionTriggerService: asValue(new AgentSessionTriggerService({ linearService, runStore, agentRunQueue, repositoryService, sandboxService, piService, steeringStore })),
   });
 
   return createRoutes(container);
@@ -381,6 +396,111 @@ describe("routes", () => {
     expect(enqueuedRunIds).toEqual([run.id]);
   });
 
+  test("steers active Pi sessions from prompted webhooks", async () => {
+    const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
+    const run = await runStore.createRun({ agentSessionId: "session-1", linearIssueId: "issue-1" });
+    await runStore.transitionRun(run.id, "refining");
+    await runStore.transitionRun(run.id, "acting");
+    const emittedActivities: Array<{ body: string | undefined; type: string }> = [];
+    const steeredMessages: string[] = [];
+    const linearService: LinearAgentClient = {
+      async emitActivity(_agentSessionId, content) {
+        emittedActivities.push({ body: content.body, type: content.type });
+      },
+      async addPullRequestUrl() {},
+    };
+    const piService: PiClient = {
+      async act() {
+        return { kind: "completed", summary: "Done.", stopReason: "stop", toolCallCount: 0 };
+      },
+      async steer(input) {
+        steeredMessages.push(input.message);
+        return true;
+      },
+    };
+    const steeringStore = new InMemorySteeringStore();
+    const routes = createTestRoutes(
+      runStore,
+      loadEnv({ REDIS_HOST: "localhost" }),
+      defaultLinearOAuthService,
+      linearService,
+      noopAgentRunQueue,
+      piService,
+      steeringStore,
+    );
+
+    const response = await routes.fetch(
+      new Request("http://localhost/webhook/linear", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "AgentSessionEvent",
+          action: "prompted",
+          agentSession: { id: "session-1" },
+          agentActivity: { body: "Use the v2 API instead" },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(steeredMessages).toEqual(["Use the v2 API instead"]);
+    expect(await steeringStore.drain(run.id)).toEqual([]);
+    expect(emittedActivities).toEqual([
+      { type: "thought", body: "Got it — I queued that guidance into the active Pi session." },
+    ]);
+  });
+
+  test("queues prompted webhook steering when no live Pi session is reachable", async () => {
+    const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
+    const run = await runStore.createRun({ agentSessionId: "session-1", linearIssueId: "issue-1" });
+    await runStore.transitionRun(run.id, "refining");
+    await runStore.transitionRun(run.id, "acting");
+    const emittedActivities: Array<{ body: string | undefined; type: string }> = [];
+    const linearService: LinearAgentClient = {
+      async emitActivity(_agentSessionId, content) {
+        emittedActivities.push({ body: content.body, type: content.type });
+      },
+      async addPullRequestUrl() {},
+    };
+    const steeringStore = new InMemorySteeringStore({
+      createMessageId: () => "steering-1",
+      getCurrentDate: () => new Date("2025-01-01T00:00:00.000Z"),
+    });
+    const routes = createTestRoutes(
+      runStore,
+      loadEnv({ REDIS_HOST: "localhost" }),
+      defaultLinearOAuthService,
+      linearService,
+      noopAgentRunQueue,
+      noopPiService,
+      steeringStore,
+    );
+
+    const response = await routes.fetch(
+      new Request("http://localhost/webhook/linear", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "AgentSessionEvent",
+          action: "prompted",
+          agentSession: { id: "session-1" },
+          agentActivity: { body: "Use the v2 API instead" },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await steeringStore.drain(run.id)).toEqual([
+      {
+        id: "steering-1",
+        runId: run.id,
+        body: "Use the v2 API instead",
+        createdAt: new Date("2025-01-01T00:00:00.000Z"),
+      },
+    ]);
+    expect(emittedActivities).toEqual([
+      { type: "thought", body: "Got it — I queued that guidance for the Pi session." },
+    ]);
+  });
+
   test("responds naturally to approval prompts", async () => {
     const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
     const run = await runStore.createRun({ agentSessionId: "session-1", linearIssueId: "issue-1" });
@@ -437,6 +557,7 @@ describe("routes", () => {
       },
     };
     const agentRunQueue: AgentRunQueue = { async enqueueRun() {} };
+    const steeringStore = new InMemorySteeringStore();
     const container = createContainer<Cradle>();
     container.register({
       env: asValue(loadEnv({ REDIS_HOST: "localhost" })),
@@ -446,8 +567,10 @@ describe("routes", () => {
       agentRunQueue: asValue(agentRunQueue),
       runStore: asValue(runStore),
       linearInstallStore: asValue(new InMemoryLinearInstallStore()),
+      piService: asValue(noopPiService),
+      steeringStore: asValue(steeringStore),
       repositoryService: asValue(repositoryClient),
-      agentSessionTriggerService: asValue(new AgentSessionTriggerService({ linearService, runStore, agentRunQueue, repositoryService: repositoryClient, sandboxService })),
+      agentSessionTriggerService: asValue(new AgentSessionTriggerService({ linearService, runStore, agentRunQueue, repositoryService: repositoryClient, sandboxService, piService: noopPiService, steeringStore })),
     });
     const routes = createRoutes(container);
 
@@ -510,6 +633,7 @@ describe("routes", () => {
         destroyedContainerId = stoppedRun.sandbox?.containerId;
       },
     };
+    const steeringStore = new InMemorySteeringStore();
     const container = createContainer<Cradle>();
     container.register({
       env: asValue(loadEnv({ REDIS_HOST: "localhost" })),
@@ -519,6 +643,8 @@ describe("routes", () => {
       agentRunQueue: asValue(agentRunQueue),
       runStore: asValue(runStore),
       linearInstallStore: asValue(new InMemoryLinearInstallStore()),
+      piService: asValue(noopPiService),
+      steeringStore: asValue(steeringStore),
       repositoryService: asValue(repositoryService),
       agentSessionTriggerService: asValue(new AgentSessionTriggerService({
         linearService,
@@ -526,6 +652,8 @@ describe("routes", () => {
         agentRunQueue,
         repositoryService,
         sandboxService: stoppingSandboxService,
+        piService: noopPiService,
+        steeringStore,
       })),
     });
     const routes = createRoutes(container);

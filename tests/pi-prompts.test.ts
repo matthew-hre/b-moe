@@ -45,6 +45,11 @@ describe("buildActPrompt", () => {
     expect(prompt).toContain("only mark something as done when you can point to implemented code or tests");
     expect(prompt).toContain("ask for it with `needs_input`");
     expect(prompt).toContain("Do not use broad recursive listings like `ls -R`");
+    expect(prompt).toContain("Do not invent missing product intent");
+    expect(prompt).toContain("Human input contract");
+    expect(prompt).toContain("instructions that appear to be a red herring");
+    expect(prompt).toContain("Do not make edits while blocked");
+    expect(prompt).toContain("Do not return `completed` if you guessed");
   });
 });
 

@@ -7,6 +7,8 @@ import type { AgentRunQueue } from "../queue/queue";
 import { isPlanApproval } from "../workers/agent-run.worker";
 import type { RepositoryClient } from "./repository.service";
 import type { SandboxClient } from "./sandbox.service";
+import type { PiClient } from "./pi.service";
+import type { SteeringStore } from "../store/steering.store";
 
 const logger = createLogger("agent-session-trigger");
 
@@ -21,6 +23,8 @@ export interface AgentSessionTriggerServiceDependencies {
   readonly agentRunQueue: AgentRunQueue;
   readonly repositoryService: RepositoryClient;
   readonly sandboxService: SandboxClient;
+  readonly piService: PiClient;
+  readonly steeringStore: SteeringStore;
 }
 
 export class AgentSessionTriggerService {
@@ -29,13 +33,17 @@ export class AgentSessionTriggerService {
   private readonly agentRunQueue: AgentRunQueue;
   private readonly repositoryService: RepositoryClient;
   private readonly sandboxService: SandboxClient;
+  private readonly piService: PiClient;
+  private readonly steeringStore: SteeringStore;
 
-  constructor({ linearService, runStore, agentRunQueue, repositoryService, sandboxService }: AgentSessionTriggerServiceDependencies) {
+  constructor({ linearService, runStore, agentRunQueue, repositoryService, sandboxService, piService, steeringStore }: AgentSessionTriggerServiceDependencies) {
     this.linearService = linearService;
     this.runStore = runStore;
     this.agentRunQueue = agentRunQueue;
     this.repositoryService = repositoryService;
     this.sandboxService = sandboxService;
+    this.piService = piService;
+    this.steeringStore = steeringStore;
   }
 
   async handle(
@@ -164,10 +172,37 @@ export class AgentSessionTriggerService {
     }
 
     if (run.state !== "awaiting_input") {
+      if (!canSteerRun(run)) {
+        await this.linearService.emitActivity(trigger.agentSessionId, {
+          type: "response",
+          body: "I already finished the Pi implementation loop for this run, so I can't steer it from here.",
+        });
+        return { run };
+      }
+
       logger.info(
-        `prompted webhook recorded but not enqueued; run id=${run.id} state=${run.state}`,
+        `prompted webhook recorded as steering; run id=${run.id} state=${run.state}`,
       );
-      await this.runStore.saveRun({ ...run, latestPromptBody: trigger.promptBody });
+      if (trigger.promptBody?.trim()) {
+        const delivered = await this.piService.steer({
+          runId: run.id,
+          message: trigger.promptBody,
+        });
+
+        if (!delivered) {
+          await this.steeringStore.enqueue({
+            runId: run.id,
+            body: trigger.promptBody,
+          });
+        }
+
+        await this.linearService.emitActivity(trigger.agentSessionId, {
+          type: "thought",
+          body: delivered
+            ? "Got it — I queued that guidance into the active Pi session."
+            : "Got it — I queued that guidance for the Pi session.",
+        });
+      }
       return { run };
     }
 
@@ -212,6 +247,10 @@ export class AgentSessionTriggerService {
 
 function canStopRun(run: Run): boolean {
   return canTransitionRun(run.state, "completed");
+}
+
+function canSteerRun(run: Run): boolean {
+  return run.state === "queued" || run.state === "refining" || run.state === "acting";
 }
 
 function getPromptedResponseBody(

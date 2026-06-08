@@ -3,6 +3,7 @@ import { PiService, type PiRpcRunInput } from "../src/services/pi.service";
 import { loadEnv } from "../src/config/env";
 import type { Run } from "../src/models/run";
 import type { SandboxClient, SandboxSession } from "../src/services/sandbox.service";
+import { InMemorySteeringStore } from "../src/store/steering.store";
 
 const now = new Date("2025-01-01T00:00:00.000Z");
 const run: Run = {
@@ -26,6 +27,7 @@ const fakeSandboxService: SandboxClient = {
   async exec() { return { stdout: "", stderr: "", exitCode: 0 }; },
   async execStream() { return { stdout: "", stderr: "", exitCode: 0 }; },
   async destroySession() {},
+  async destroyRunSandbox() {},
 };
 
 describe("PiService", () => {
@@ -76,7 +78,7 @@ describe("PiService", () => {
       sandbox,
       args: [
         "--mode",
-        "json",
+        "rpc",
         "--offline",
         "--provider",
         "anthropic",
@@ -281,7 +283,7 @@ describe("PiService", () => {
 
     expect(rpcInput?.args).toEqual([
       "--mode",
-      "json",
+      "rpc",
       "--offline",
       "--provider",
       "openrouter",
@@ -325,5 +327,43 @@ describe("PiService", () => {
       stopReason: "stop",
       toolCallCount: 0,
     });
+  });
+
+  test("flushes queued steering when an RPC session is ready", async () => {
+    const steeredMessages: string[] = [];
+    const steeringStore = new InMemorySteeringStore({
+      createMessageId: () => "steering-1",
+      getCurrentDate: () => new Date("2025-01-01T00:00:00.000Z"),
+    });
+    await steeringStore.enqueue({ runId: run.id, body: "Use the v2 API instead." });
+    const service = new PiService({
+      env: loadEnv({ REDIS_HOST: "localhost", OPENROUTER_API_KEY: "sk-or-v1-test" }),
+      sandboxService: fakeSandboxService,
+      steeringStore,
+      rpcRunner: {
+        async run(input) {
+          await input.onReady?.({
+            async prompt() {},
+            async steer(message) {
+              steeredMessages.push(message);
+            },
+            async followUp() {},
+            async abort() {},
+          });
+
+          return [
+            {
+              type: "agent_end",
+              messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" }],
+            },
+          ];
+        },
+      },
+    });
+
+    await service.act({ run, sandbox });
+
+    expect(steeredMessages).toEqual(["Use the v2 API instead."]);
+    expect(await steeringStore.drain(run.id)).toEqual([]);
   });
 });

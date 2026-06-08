@@ -20,6 +20,7 @@ import {
   RedisLinearInstallStore,
   type LinearInstallStore,
 } from "../store/linear-install.store";
+import { RedisSteeringStore, type SteeringStore } from "../store/steering.store";
 import { createRedisClient, type RedisClient } from "../store/redis";
 
 export interface Cradle {
@@ -37,6 +38,7 @@ export interface Cradle {
   readonly agentRunWorker: AgentRunWorker;
   readonly agentRunQueue: AgentRunQueue;
   readonly runStore: RunStore;
+  readonly steeringStore: SteeringStore;
   readonly linearInstallStore: LinearInstallStore;
   readonly redisClient: RedisClient;
 }
@@ -55,6 +57,9 @@ export function createDiContainer(env: Env = loadEnv()): AwilixContainer<Cradle>
     runStore: asClass(RedisRunStore)
       .singleton()
       .inject(() => ({ createRunId: randomUUID, getCurrentDate: () => new Date() })),
+    steeringStore: asClass(RedisSteeringStore)
+      .singleton()
+      .inject(() => ({ createMessageId: randomUUID, getCurrentDate: () => new Date() })),
     agentRunQueue: asFunction(({ redisClient }) => new BullMqAgentRunQueue(redisClient)).singleton(),
     agentRunWorker: asClass(AgentRunWorker).singleton(),
     llmService: asClass(LlmService)

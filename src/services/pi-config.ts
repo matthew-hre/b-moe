@@ -57,12 +57,13 @@ export function buildPiSettingsJson(config: ResolvedPiAgentConfig): string {
 export interface BuildPiArgsOptions {
   readonly sessionId?: string;
   readonly sessionName?: string;
+  readonly mode?: "json" | "rpc";
 }
 
 const DEFAULT_PI_TOOLS = "read,write,edit,bash,grep,find,ls";
 
 export function buildPiArgs(config: ResolvedPiAgentConfig, env: Pick<Env, "piTools">, options: BuildPiArgsOptions = {}): string[] {
-  const args = ["--mode", "json", "--offline", "--provider", config.provider, "--model", config.model, "--api-key", config.apiKey];
+  const args = ["--mode", options.mode ?? "json", "--offline", "--provider", config.provider, "--model", config.model, "--api-key", config.apiKey];
 
   if (options.sessionId) {
     args.push("--session", options.sessionId);

@@ -159,6 +159,7 @@ describe("Pi config files", () => {
       },
       async execStream() { return { stdout: "", stderr: "", exitCode: 0 }; },
       async destroySession() {},
+      async destroyRunSandbox() {},
     };
 
     await injectPiAgentConfig(sandboxService, sandbox, {

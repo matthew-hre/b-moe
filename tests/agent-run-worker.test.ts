@@ -34,6 +34,9 @@ const piService: PiClient = {
   async act({ run }) {
     return { kind: "completed", summary: `Pi acted on ${run.id}`, stopReason: "stop", toolCallCount: 1 };
   },
+  async steer() {
+    return false;
+  },
 };
 const gitService: GitClient = {
   async hasChanges() { return true; },
@@ -194,12 +197,39 @@ describe("processAgentRun", () => {
           sessionId: "pi-session-1",
         };
       },
+      async steer() {
+        return false;
+      },
     };
     let destroyed = false;
+    const preservingSandboxService: SandboxClient = {
+      ...sandboxService,
+      async ensureSession(inputRun) {
+        const session = await sandboxService.ensureSession(inputRun);
+        const latestRun = await runStore.getRun(inputRun.id);
+
+        if (latestRun) {
+          await runStore.saveRun({
+            ...latestRun,
+            sandbox: {
+              containerId: session.containerId,
+              status: "ready",
+              workspacePrepared: true,
+              branchName: session.branchName,
+            },
+          });
+        }
+
+        return session;
+      },
+      async destroySession() {
+        destroyed = true;
+      },
+    };
 
     await processAgentRun(run.id, {
       linearService,
-      sandboxService: { ...sandboxService, async destroySession() { destroyed = true; } },
+      sandboxService: preservingSandboxService,
       piService: piClient,
       gitService,
       githubService,
@@ -213,6 +243,12 @@ describe("processAgentRun", () => {
       pausedFrom: "acting",
       executionContext: "Need the image before editing README.md.",
       piSessionId: "pi-session-1",
+      sandbox: {
+        containerId: "container-run-1",
+        status: "ready",
+        workspacePrepared: true,
+        branchName: "b-moe/run-1",
+      },
     });
     expect(destroyed).toBe(false);
     expect(emittedActivities).toEqual([
@@ -288,6 +324,9 @@ describe("AgentRunWorker", () => {
       async act() {
         events.push("pi:act");
         return { kind: "completed", summary: "Done acting", stopReason: "stop", toolCallCount: 1 };
+      },
+      async steer() {
+        return false;
       },
     };
 

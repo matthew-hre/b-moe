@@ -135,14 +135,15 @@ async function processActing(
       onThought: (thought) => linearService.emitActivity(run.agentSessionId, { type: "thought", body: thought }),
       onProgress: (message: string) => linearService.emitActivity(run.agentSessionId, { type: "thought", body: message }),
     }));
-    const piRun = result.sessionId && result.sessionId !== run.piSessionId
-      ? await runStore.saveRun({ ...run, piSessionId: result.sessionId })
-      : run;
+    const latestRun = await runStore.getRun(run.id) ?? run;
+    const piRun = result.sessionId && result.sessionId !== latestRun.piSessionId
+      ? await runStore.saveRun({ ...latestRun, piSessionId: result.sessionId })
+      : latestRun;
 
     if (result.kind === "needs_input") {
       const pausedRun = await runStore.saveRun({
         ...piRun,
-        executionContext: result.context ?? run.executionContext,
+        executionContext: result.context ?? piRun.executionContext,
         latestPromptBody: undefined,
       });
       await linearService.emitActivity(run.agentSessionId, {
