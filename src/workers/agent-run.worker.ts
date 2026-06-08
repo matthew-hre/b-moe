@@ -7,6 +7,7 @@ import type { SandboxClient, SandboxSession } from "../services/sandbox.service"
 import type { PiClient } from "../services/pi.service";
 import type { GitClient } from "../services/git.service";
 import type { GitHubClient } from "../services/github.service";
+import type { CommitGenClient } from "../services/commit-gen.service";
 import type { RedisClient } from "../store/redis";
 import type { RunStore } from "../store/run.store";
 
@@ -18,6 +19,7 @@ export interface AgentRunWorkerDependencies {
   readonly piService: PiClient;
   readonly gitService: GitClient;
   readonly githubService: GitHubClient;
+  readonly commitGenService: CommitGenClient;
   readonly redisClient: RedisClient;
   readonly runStore: RunStore;
 }
@@ -60,7 +62,7 @@ export class AgentRunWorker {
 
 export async function processAgentRun(
   runId: string,
-  { linearService, sandboxService, piService, gitService, githubService, runStore }: AgentRunWorkerDependencies,
+  { linearService, sandboxService, piService, gitService, githubService, commitGenService, runStore }: AgentRunWorkerDependencies,
 ): Promise<void> {
   const run = await runStore.getRun(runId);
 
@@ -92,7 +94,7 @@ export async function processAgentRun(
   }
 
   if (run.state === "acting") {
-    await processActing(run, { linearService, sandboxService, piService, gitService, githubService, runStore });
+    await processActing(run, { linearService, sandboxService, piService, gitService, githubService, commitGenService, runStore });
     return;
   }
 
@@ -104,7 +106,7 @@ export async function processAgentRun(
   });
 
   const actingRun = await runStore.transitionRun(refiningRun.id, "acting");
-  await processActing(actingRun, { linearService, sandboxService, piService, gitService, githubService, runStore });
+  await processActing(actingRun, { linearService, sandboxService, piService, gitService, githubService, commitGenService, runStore });
 }
 
 export function isPlanApproval(promptBody: string | undefined): boolean {
@@ -117,15 +119,16 @@ export function isPlanApproval(promptBody: string | undefined): boolean {
 
 async function processActing(
   run: Run,
-  { linearService, sandboxService, piService, gitService, githubService, runStore }: Pick<AgentRunWorkerDependencies, "linearService" | "sandboxService" | "piService" | "gitService" | "githubService" | "runStore">,
+  { linearService, sandboxService, piService, gitService, githubService, commitGenService, runStore }: Pick<AgentRunWorkerDependencies, "linearService" | "sandboxService" | "piService" | "gitService" | "githubService" | "commitGenService" | "runStore">,
 ): Promise<void> {
   logger.info(`acting start runId=${run.id} repoUrl=${run.repoUrl ?? "unset"}`);
 
-  let sandbox: SandboxSession | undefined;
+  let sandboxForCleanup: SandboxSession | undefined;
   let shouldDestroySandbox = true;
 
   try {
-    sandbox = await runStep(run.id, "ensure sandbox", () => sandboxService.ensureSession(run));
+    const sandbox = await runStep(run.id, "ensure sandbox", () => sandboxService.ensureSession(run));
+    sandboxForCleanup = sandbox;
     const result = await runStep(run.id, "run Pi", () => piService.act({
       run,
       sandbox,
@@ -156,14 +159,39 @@ async function processActing(
       baseBranch: run.baseBranch,
     }));
     logger.info(`git summary runId=${run.id}: ${gitSummary}`);
-    await runStep(run.id, "commit pending changes", () => gitService.commitAll({
-      sandbox,
-      message: run.linearIssueId ? `${run.linearIssueId}: B-MOE changes` : "B-MOE changes",
+
+    const changedFiles = await runStep(run.id, "list changed files", () => gitService.getChangedFiles({ sandbox }));
+    logger.info(`changed files runId=${run.id}: ${changedFiles.map((f) => f.path).join(", ")}`);
+
+    const generation = await runStep(run.id, "generate commit plan", () => commitGenService.generate({
+      linearIssueId: run.linearIssueId,
+      summary: result.summary,
+      changedFiles,
     }));
-    await linearService.emitActivity(run.agentSessionId, {
-      type: "thought",
-      body: "Committed any pending workspace changes.",
-    });
+    logger.info(`generated commit plan runId=${run.id}: ${generation.commits.length} commits, prTitle=${generation.prTitle}`);
+
+    if (generation.commits.length > 0) {
+      for (const commit of generation.commits) {
+        await runStep(run.id, `commit: ${commit.message}`, () => gitService.commitFiles({
+          sandbox,
+          message: run.linearIssueId ? `${run.linearIssueId}: ${commit.message}` : commit.message,
+          files: commit.files,
+        }));
+      }
+      await linearService.emitActivity(run.agentSessionId, {
+        type: "thought",
+        body: `Created ${generation.commits.length} commit(s).`,
+      });
+    } else {
+      await runStep(run.id, "commit pending changes", () => gitService.commitAll({
+        sandbox,
+        message: run.linearIssueId ? `${run.linearIssueId}: B-MOE changes` : "B-MOE changes",
+      }));
+      await linearService.emitActivity(run.agentSessionId, {
+        type: "thought",
+        body: "Committed any pending workspace changes.",
+      });
+    }
     const hasChanges = await runStep(run.id, "check git changes", () => gitService.hasChanges({
       sandbox,
       baseBranch: run.baseBranch,
@@ -187,12 +215,16 @@ async function processActing(
       type: "thought",
       body: `Pushed branch \`${sandbox.branchName}\`.`,
     });
+    const prTitle = run.linearIssueId
+      ? `${run.linearIssueId}: ${generation.prTitle}`
+      : generation.prTitle;
     const pullRequest = await runStep(run.id, "create pull request", () => githubService.createPullRequest({
       run,
       repoUrl: run.repoUrl ?? "",
       branchName: sandbox.branchName,
       baseBranch: run.baseBranch,
-      summary: result.summary,
+      summary: generation.description,
+      title: prTitle,
     }));
     const prOpenedRun = await runStore.transitionRun(run.id, "pr_opened");
     await runStore.saveRun({ ...prOpenedRun, pullRequest });
@@ -209,7 +241,8 @@ async function processActing(
     await emitImplementationError(linearService, runStore, run, message);
     throw error;
   } finally {
-    if (shouldDestroySandbox && sandbox) {
+    if (shouldDestroySandbox && sandboxForCleanup) {
+      const sandbox = sandboxForCleanup;
       await runStep(run.id, "destroy sandbox", () => sandboxService.destroySession(sandbox));
     }
   }

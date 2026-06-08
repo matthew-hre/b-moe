@@ -100,4 +100,28 @@ describe("GitHubService", () => {
       summary: "Done",
     })).rejects.toThrow(MissingGitHubConfigError);
   });
+
+  test("uses explicit title when provided", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const service = new GitHubService({
+      env: loadEnv({ REDIS_HOST: "localhost", GITHUB_TOKEN: "github-token-1" }),
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), init: init ?? {} });
+        return Response.json({ number: 9, html_url: "https://github.com/acme/repo/pull/9" });
+      },
+    });
+
+    await service.createPullRequest({
+      run,
+      repoUrl: "https://github.com/acme/repo.git",
+      branchName: "b-moe/eng-123",
+      summary: "## Summary\n\nDone",
+      title: "ENG-123: feat: add user auth",
+    });
+
+    expect(JSON.parse(String(calls[0]?.init.body))).toMatchObject({
+      title: "ENG-123: feat: add user auth",
+      body: "## Summary\n\nDone",
+    });
+  });
 });

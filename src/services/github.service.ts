@@ -11,6 +11,7 @@ export interface CreatePullRequestInput {
   readonly branchName: string;
   readonly baseBranch?: string;
   readonly summary: string;
+  readonly title?: string;
 }
 
 export interface CreatedPullRequest {
@@ -70,7 +71,7 @@ export class GitHubService implements GitHubClient {
         "X-GitHub-Api-Version": "2022-11-28",
       },
       body: JSON.stringify({
-        title: input.run.linearIssueId ? `${input.run.linearIssueId}: B-MOE implementation` : "B-MOE implementation",
+        title: input.title ?? (input.run.linearIssueId ? `${input.run.linearIssueId}: B-MOE implementation` : "B-MOE implementation"),
         head: input.branchName,
         base: input.baseBranch ?? "main",
         body: input.summary,

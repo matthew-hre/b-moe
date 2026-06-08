@@ -3,10 +3,17 @@ import { createAuthenticatedGitHubUrl } from "./repository.service";
 import type { GitHubClient } from "./github.service";
 import { resolveSandboxGitIdentity, type SandboxClient, type SandboxSession } from "./sandbox.service";
 
+export interface ChangedFile {
+  readonly status: string;
+  readonly path: string;
+}
+
 export interface GitClient {
   hasChanges(input: { sandbox: SandboxSession; baseBranch?: string }): Promise<boolean>;
   describeHead(input: { sandbox: SandboxSession; baseBranch?: string }): Promise<string>;
   commitAll(input: { sandbox: SandboxSession; message: string }): Promise<void>;
+  commitFiles(input: { sandbox: SandboxSession; message: string; files: readonly string[] }): Promise<void>;
+  getChangedFiles(input: { sandbox: SandboxSession }): Promise<readonly ChangedFile[]>;
   pushBranch(input: { sandbox: SandboxSession; branchName: string; repoUrl?: string }): Promise<void>;
 }
 
@@ -50,6 +57,33 @@ export class GitService implements GitClient {
     const remote = await this.createRemote(repoUrl);
 
     await this.run(sandbox, ["git", "push", "--set-upstream", remote, `HEAD:refs/heads/${branchName}`, "--force"]);
+  }
+
+  async commitFiles({ sandbox, message, files }: { sandbox: SandboxSession; message: string; files: readonly string[] }): Promise<void> {
+    if (files.length === 0) {
+      return;
+    }
+
+    await this.ensureGitIdentity(sandbox);
+    await this.run(sandbox, ["git", "add", ...files]);
+    await this.run(sandbox, ["git", "commit", "-m", message]);
+  }
+
+  async getChangedFiles({ sandbox }: { sandbox: SandboxSession }): Promise<readonly ChangedFile[]> {
+    const output = await this.runForOutput(sandbox, ["git", "diff", "--name-status", "HEAD"]);
+
+    if (!output.trim()) {
+      return [];
+    }
+
+    return output
+      .trim()
+      .split("\n")
+      .map((line) => {
+        const [status, ...pathParts] = line.split("\t");
+        return { status: status ?? "?", path: pathParts.join("\t") };
+      })
+      .filter((entry) => entry.path.length > 0);
   }
 
   async commitAll({ sandbox, message }: { sandbox: SandboxSession; message: string }): Promise<void> {
