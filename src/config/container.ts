@@ -12,6 +12,7 @@ import { RepositoryService, type RepositoryClient } from "../services/repository
 import { PiService, type PiClient } from "../services/pi.service";
 import { GitService, type GitClient } from "../services/git.service";
 import { GitHubService, type GitHubClient } from "../services/github.service";
+import { CommitGenService, type CommitGenClient } from "../services/commit-gen.service";
 import { BullMqAgentRunQueue, type AgentRunQueue } from "../queue/queue";
 import { AgentRunWorker } from "../workers/agent-run.worker";
 import { RedisRunStore, type RunStore } from "../store/run.store";
@@ -31,6 +32,7 @@ export interface Cradle {
   readonly piService: PiClient;
   readonly gitService: GitClient;
   readonly githubService: GitHubClient;
+  readonly commitGenService: CommitGenClient;
   readonly agentSessionTriggerService: AgentSessionTriggerService;
   readonly agentRunWorker: AgentRunWorker;
   readonly agentRunQueue: AgentRunQueue;
@@ -65,6 +67,7 @@ export function createDiContainer(env: Env = loadEnv()): AwilixContainer<Cradle>
     piService: asClass(PiService)
       .singleton()
       .inject(() => ({ rpcRunner: undefined })),
+    commitGenService: asClass(CommitGenService).singleton(),
     gitService: asClass(GitService).singleton(),
     githubService: asClass(GitHubService)
       .singleton()

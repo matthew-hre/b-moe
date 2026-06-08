@@ -99,6 +99,67 @@ describe("GitService", () => {
       "--force",
     ]);
   });
+
+  test("getChangedFiles parses git diff --name-status output", async () => {
+    const service = new GitService({
+      env,
+      sandboxService: createSandboxService({
+        output: "M\tsrc/index.ts\nA\tsrc/new-feature.ts\nD\tsrc/old-file.ts\n",
+      }),
+    });
+
+    const files = await service.getChangedFiles({ sandbox });
+
+    expect(files).toEqual([
+      { status: "M", path: "src/index.ts" },
+      { status: "A", path: "src/new-feature.ts" },
+      { status: "D", path: "src/old-file.ts" },
+    ]);
+  });
+
+  test("getChangedFiles returns empty array for clean working tree", async () => {
+    const service = new GitService({
+      env,
+      sandboxService: createSandboxService({ output: "" }),
+    });
+
+    const files = await service.getChangedFiles({ sandbox });
+
+    expect(files).toEqual([]);
+  });
+
+  test("commitFiles stages and commits specific files", async () => {
+    const commands: Array<readonly string[]> = [];
+    const service = new GitService({
+      env,
+      sandboxService: createSandboxService({ commands }),
+    });
+
+    await service.commitFiles({
+      sandbox,
+      message: "feat: add new feature",
+      files: ["src/feature.ts", "tests/feature.test.ts"],
+    });
+
+    expect(commands).toEqual([
+      ["git", "config", "user.name", "b-moe-bot"],
+      ["git", "config", "user.email", "b-moe-bot@users.noreply.github.com"],
+      ["git", "add", "src/feature.ts", "tests/feature.test.ts"],
+      ["git", "commit", "-m", "feat: add new feature"],
+    ]);
+  });
+
+  test("commitFiles skips commit when no files provided", async () => {
+    const commands: Array<readonly string[]> = [];
+    const service = new GitService({
+      env,
+      sandboxService: createSandboxService({ commands }),
+    });
+
+    await service.commitFiles({ sandbox, message: "empty commit", files: [] });
+
+    expect(commands).toEqual([]);
+  });
 });
 
 function createSandboxService({
@@ -123,6 +184,7 @@ function createSandboxService({
       return { stdout: "", stderr: "", exitCode: 0 };
     },
     async destroySession() {},
+    async destroyRunSandbox() {},
   };
 }
 

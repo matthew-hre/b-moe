@@ -5,6 +5,7 @@ import type { SandboxClient } from "../src/services/sandbox.service";
 import type { PiClient } from "../src/services/pi.service";
 import type { GitClient } from "../src/services/git.service";
 import type { GitHubClient } from "../src/services/github.service";
+import type { CommitGenClient, GenerationResult } from "../src/services/commit-gen.service";
 import type { RedisClient } from "../src/store/redis";
 import { InMemoryRunStore } from "../src/store/run.store";
 
@@ -38,7 +39,18 @@ const gitService: GitClient = {
   async hasChanges() { return true; },
   async describeHead() { return "branch=b-moe/ENG-123"; },
   async commitAll() {},
+  async commitFiles() {},
+  async getChangedFiles() { return []; },
   async pushBranch() {},
+};
+const commitGenService: CommitGenClient = {
+  async generate() {
+    return {
+      prTitle: "implement changes",
+      description: "## Summary\n\nPi acted on run-1",
+      commits: [{ message: "implement changes", files: [] }],
+    } as GenerationResult;
+  },
 };
 const githubService: GitHubClient = {
   async getAccessToken() { return "installation-token-1"; },
@@ -74,6 +86,7 @@ describe("processAgentRun", () => {
       piService,
       gitService,
       githubService,
+      commitGenService,
       redisClient: fakeRedisClient,
       runStore,
     });
@@ -109,6 +122,7 @@ describe("processAgentRun", () => {
       piService,
       gitService,
       githubService,
+      commitGenService,
       redisClient: fakeRedisClient,
       runStore,
     });
@@ -139,6 +153,7 @@ describe("processAgentRun", () => {
       piService,
       gitService,
       githubService,
+      commitGenService,
       redisClient: fakeRedisClient,
       runStore,
     });
@@ -188,6 +203,7 @@ describe("processAgentRun", () => {
       piService: piClient,
       gitService,
       githubService,
+      commitGenService,
       redisClient: fakeRedisClient,
       runStore,
     });
@@ -223,6 +239,7 @@ describe("AgentRunWorker", () => {
       piService,
       gitService,
       githubService,
+      commitGenService,
       redisClient: fakeRedisClient,
       runStore,
     });
@@ -265,6 +282,7 @@ describe("AgentRunWorker", () => {
       async destroySession() {
         events.push("sandbox:destroy");
       },
+      async destroyRunSandbox() {},
     };
     const piClient: PiClient = {
       async act() {
@@ -279,6 +297,7 @@ describe("AgentRunWorker", () => {
       piService: piClient,
       gitService,
       githubService,
+      commitGenService,
       redisClient: fakeRedisClient,
       runStore,
     });
@@ -286,7 +305,7 @@ describe("AgentRunWorker", () => {
     expect(events).toEqual([
       "sandbox:ensure",
       "pi:act",
-      "thought:Committed any pending workspace changes.",
+      "thought:Created 1 commit(s).",
       "thought:Pushed branch `b-moe/issue-1`.",
       "response:Done acting\n\nOpened PR: https://github.com/acme/repo/pull/1",
       "sandbox:destroy",
@@ -316,6 +335,8 @@ describe("AgentRunWorker", () => {
         async hasChanges() { return false; },
         async describeHead() { return "branch=b-moe/run-1"; },
         async commitAll() {},
+        async commitFiles() {},
+        async getChangedFiles() { return []; },
         async pushBranch() { pushed = true; },
       },
       githubService: {
@@ -325,6 +346,7 @@ describe("AgentRunWorker", () => {
           return { number: 1, url: "https://github.com/acme/repo/pull/1", branchName: "b-moe/run-1" };
         },
       },
+      commitGenService,
       redisClient: fakeRedisClient,
       runStore,
     });
@@ -366,6 +388,7 @@ describe("AgentRunWorker", () => {
       piService,
       gitService,
       githubService,
+      commitGenService,
       redisClient: fakeRedisClient,
       runStore,
     })).rejects.toThrow("ensure sandbox failed: sandbox unavailable");
