@@ -44,6 +44,7 @@ export interface SandboxClient {
     options?: SandboxExecOptions,
   ): Promise<SandboxExecResult>;
   destroySession(session: SandboxSession): Promise<void>;
+  destroyRunSandbox(run: Run): Promise<void>;
 }
 
 export interface SandboxServiceDependencies {
@@ -136,6 +137,18 @@ export class SandboxService implements SandboxClient {
     console.log(`[sandbox-service] destroying sandbox runId=${session.runId} containerId=${session.containerId}`);
     await this.dockerEngine.removeContainer(session.containerId);
     this.provisioningPromises.delete(session.runId);
+  }
+
+  async destroyRunSandbox(run: Run): Promise<void> {
+    const containerId = run.sandbox?.containerId;
+
+    if (!containerId) {
+      return;
+    }
+
+    console.log(`[sandbox-service] destroying sandbox for stopped run runId=${run.id} containerId=${containerId}`);
+    await this.dockerEngine.removeContainer(containerId);
+    this.provisioningPromises.delete(run.id);
   }
 
   private async ensureProvisioning(runId: string): Promise<void> {

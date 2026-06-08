@@ -1,5 +1,5 @@
 import { LinearClient } from "@linear/sdk";
-import type { LinearInstallStore } from "../store/linear-install.store";
+import type { LinearOAuthClient } from "./linear-oauth.service";
 
 export type AgentActivityType = "thought" | "action" | "elicitation" | "response" | "error";
 
@@ -17,7 +17,7 @@ export interface SessionExternalUrl {
 }
 
 export interface LinearServiceDependencies {
-  readonly linearInstallStore: LinearInstallStore;
+  readonly linearOAuthService: LinearOAuthClient;
   readonly createClient?: (accessToken: string) => LinearClient;
 }
 
@@ -41,11 +41,11 @@ export class LinearApiError extends Error {
 }
 
 export class LinearService implements LinearAgentClient {
-  private readonly linearInstallStore: LinearInstallStore;
+  private readonly linearOAuthService: LinearOAuthClient;
   private readonly createClient: (accessToken: string) => LinearClient;
 
-  constructor({ linearInstallStore, createClient = (accessToken) => new LinearClient({ accessToken }) }: LinearServiceDependencies) {
-    this.linearInstallStore = linearInstallStore;
+  constructor({ linearOAuthService, createClient = (accessToken) => new LinearClient({ accessToken }) }: LinearServiceDependencies) {
+    this.linearOAuthService = linearOAuthService;
     this.createClient = createClient;
   }
 
@@ -77,11 +77,17 @@ export class LinearService implements LinearAgentClient {
   }
 
   private async getClient(): Promise<LinearClient> {
-    const install = await this.linearInstallStore.getInstall();
+    let install;
 
-    if (!install) {
-      console.log("[linear-service] no Linear install available");
-      throw new LinearNotInstalledError();
+    try {
+      install = await this.linearOAuthService.ensureFreshAccessToken();
+    } catch (error) {
+      if (error instanceof Error && error.message === "Linear app is not installed; complete the OAuth flow first") {
+        console.log("[linear-service] no Linear install available");
+        throw new LinearNotInstalledError();
+      }
+
+      throw error;
     }
 
     console.log(`[linear-service] using install appUserId=${install.appUserId}`);

@@ -2,7 +2,7 @@ import { Worker, type ConnectionOptions, type Job } from "bullmq";
 import { AGENT_RUN_QUEUE_NAME, type AgentRunJobData } from "../queue/queue";
 import type { Run } from "../models/run";
 import type { LinearAgentClient } from "../services/linear.service";
-import type { SandboxClient } from "../services/sandbox.service";
+import type { SandboxClient, SandboxSession } from "../services/sandbox.service";
 import type { PiClient } from "../services/pi.service";
 import type { GitClient } from "../services/git.service";
 import type { GitHubClient } from "../services/github.service";
@@ -120,10 +120,11 @@ async function processActing(
 ): Promise<void> {
   console.log(`[agent-run-worker] acting start runId=${run.id} repoUrl=${run.repoUrl ?? "unset"}`);
 
-  const sandbox = await runStep(run.id, "ensure sandbox", () => sandboxService.ensureSession(run));
+  let sandbox: SandboxSession | undefined;
   let shouldDestroySandbox = true;
 
   try {
+    sandbox = await runStep(run.id, "ensure sandbox", () => sandboxService.ensureSession(run));
     const result = await runStep(run.id, "run Pi", () => piService.act({
       run,
       sandbox,
@@ -172,6 +173,7 @@ async function processActing(
         type: "response",
         body: `${result.summary}\n\nPi completed but did not produce any git changes, so I'm not opening a PR yet.`,
       });
+      await runStore.transitionRun(run.id, "completed");
       return;
     }
 
@@ -203,15 +205,36 @@ async function processActing(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await linearService.emitActivity(run.agentSessionId, {
-      type: "response",
-      body: `I hit an implementation error: ${message}`,
-    });
+    await emitImplementationError(linearService, runStore, run, message);
     throw error;
   } finally {
-    if (shouldDestroySandbox) {
+    if (shouldDestroySandbox && sandbox) {
       await runStep(run.id, "destroy sandbox", () => sandboxService.destroySession(sandbox));
     }
+  }
+}
+
+async function emitImplementationError(
+  linearService: LinearAgentClient,
+  runStore: RunStore,
+  run: Run,
+  message: string,
+): Promise<void> {
+  try {
+    await linearService.emitActivity(run.agentSessionId, {
+      type: "error",
+      body: message,
+      error: message,
+    });
+  } catch (activityError) {
+    const activityMessage = activityError instanceof Error ? activityError.message : String(activityError);
+    console.log(`[agent-run-worker] failed to emit error activity runId=${run.id}: ${activityMessage}`);
+  }
+
+  const latestRun = await runStore.getRun(run.id);
+
+  if (latestRun && latestRun.state === "acting") {
+    await runStore.transitionRun(run.id, "completed");
   }
 }
 

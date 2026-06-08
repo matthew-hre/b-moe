@@ -125,4 +125,81 @@ describe("LinearOAuthService", () => {
       }),
     ).rejects.toThrow(LinearOAuthExchangeError);
   });
+
+  test("refreshes an expired access token before returning the install", async () => {
+    const tokenFetchCalls: Array<{ init?: RequestInit }> = [];
+    const mockTokenFetch = (async (_input, init) => {
+      tokenFetchCalls.push({ init });
+      return Response.json({
+        access_token: "access-token-2",
+        token_type: "Bearer",
+        expires_in: 3600,
+        scope: "read write app:assignable app:mentionable",
+        refresh_token: "refresh-token-2",
+      });
+    }) as typeof fetch;
+
+    const linearInstallStore = new InMemoryLinearInstallStore();
+    await linearInstallStore.saveInstall({
+      appUserId: "linear-app-user-1",
+      accessToken: "access-token-1",
+      scope: "read write app:assignable app:mentionable",
+      expiresAt: new Date("2020-01-01T00:00:00.000Z"),
+      refreshToken: "refresh-token-1",
+    });
+
+    const service = new LinearOAuthService({
+      env: loadEnv({
+        LINEAR_CLIENT_ID: "client-id-1",
+        LINEAR_CLIENT_SECRET: "client-secret-1",
+        REDIS_HOST: "localhost",
+      }),
+      linearInstallStore,
+      fetch: mockTokenFetch,
+    });
+
+    const install = await service.ensureFreshAccessToken("linear-app-user-1");
+
+    expect(install.accessToken).toBe("access-token-2");
+    expect(install.refreshToken).toBe("refresh-token-2");
+    expect(tokenFetchCalls).toHaveLength(1);
+    expect(tokenFetchCalls[0]?.init?.body).toEqual(
+      new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: "refresh-token-1",
+        client_id: "client-id-1",
+        client_secret: "client-secret-1",
+      }),
+    );
+
+    const storedInstall = await linearInstallStore.getInstall("linear-app-user-1");
+    expect(storedInstall?.accessToken).toBe("access-token-2");
+  });
+
+  test("returns a still-valid install without refreshing", async () => {
+    const linearInstallStore = new InMemoryLinearInstallStore();
+    await linearInstallStore.saveInstall({
+      appUserId: "linear-app-user-1",
+      accessToken: "access-token-1",
+      scope: "read write app:assignable app:mentionable",
+      expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+      refreshToken: "refresh-token-1",
+    });
+
+    const service = new LinearOAuthService({
+      env: loadEnv({
+        LINEAR_CLIENT_ID: "client-id-1",
+        LINEAR_CLIENT_SECRET: "client-secret-1",
+        REDIS_HOST: "localhost",
+      }),
+      linearInstallStore,
+      fetch: (async () => {
+        throw new Error("refresh should not be called");
+      }) as unknown as typeof fetch,
+    });
+
+    const install = await service.ensureFreshAccessToken("linear-app-user-1");
+
+    expect(install.accessToken).toBe("access-token-1");
+  });
 });

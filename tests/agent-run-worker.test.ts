@@ -27,6 +27,7 @@ const sandboxService: SandboxClient = {
     return { stdout: "", stderr: "", exitCode: 0 };
   },
   async destroySession() {},
+  async destroyRunSandbox() {},
 };
 const piService: PiClient = {
   async act({ run }) {
@@ -328,12 +329,54 @@ describe("AgentRunWorker", () => {
       runStore,
     });
 
-    expect(await runStore.getRun(run.id)).toMatchObject({ state: "acting" });
+    expect(await runStore.getRun(run.id)).toMatchObject({ state: "completed" });
     expect(pushed).toBe(false);
     expect(createdPullRequest).toBe(false);
     expect(emittedActivities[emittedActivities.length - 1]).toEqual({
       type: "response",
       body: "Pi acted on run-1\n\nPi completed but did not produce any git changes, so I'm not opening a PR yet.",
     });
+  });
+
+  test("emits an error activity and completes the run when implementation fails", async () => {
+    const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
+    const run = await runStore.createRun({ agentSessionId: "session-1", repoUrl: "https://github.com/acme/repo" });
+    await runStore.transitionRun(run.id, "refining");
+    await runStore.transitionRun(run.id, "acting");
+    const emittedActivities: Array<{ type: string; body: string | undefined; error: string | undefined }> = [];
+    const linearService: LinearAgentClient = {
+      async emitActivity(_agentSessionId, content) {
+        emittedActivities.push({
+          type: content.type,
+          body: content.body,
+          error: content.error,
+        });
+      },
+      async addPullRequestUrl() {},
+    };
+
+    await expect(processAgentRun(run.id, {
+      linearService,
+      sandboxService: {
+        ...sandboxService,
+        async ensureSession() {
+          throw new Error("sandbox unavailable");
+        },
+      },
+      piService,
+      gitService,
+      githubService,
+      redisClient: fakeRedisClient,
+      runStore,
+    })).rejects.toThrow("ensure sandbox failed: sandbox unavailable");
+
+    expect(await runStore.getRun(run.id)).toMatchObject({ state: "completed" });
+    expect(emittedActivities).toEqual([
+      {
+        type: "error",
+        body: "ensure sandbox failed: sandbox unavailable",
+        error: "ensure sandbox failed: sandbox unavailable",
+      },
+    ]);
   });
 });

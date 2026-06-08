@@ -1,4 +1,4 @@
-import { resumeRun, type Run } from "../models/run";
+import { canTransitionRun, resumeRun, type Run } from "../models/run";
 import type { getAgentSessionTrigger } from "../models/linear";
 import type { LinearAgentClient } from "./linear.service";
 import type { RunStore } from "../store/run.store";
@@ -44,8 +44,12 @@ export class AgentSessionTriggerService {
     }
 
     console.log(
-      `[agent-session-trigger] handling action=${trigger.action} agentSessionId=${trigger.agentSessionId} issueId=${trigger.linearIssueId ?? "none"}`,
+      `[agent-session-trigger] handling action=${trigger.action} agentSessionId=${trigger.agentSessionId} issueId=${trigger.linearIssueId ?? "none"} stopRequested=${trigger.stopRequested}`,
     );
+
+    if (trigger.stopRequested) {
+      return this.handleStop(trigger);
+    }
 
     if (trigger.action === "created") {
       return this.handleCreated(trigger);
@@ -57,6 +61,43 @@ export class AgentSessionTriggerService {
 
     console.log(`[agent-session-trigger] unknown action=${trigger.action}; ignoring`);
     return { ignored: true };
+  }
+
+  private async handleStop(
+    trigger: ReturnType<typeof getAgentSessionTrigger>,
+  ): Promise<AgentSessionTriggerResponse> {
+    if (!trigger) {
+      throw new Error("handleStop called with null trigger");
+    }
+
+    const run = await this.runStore.getRunByAgentSession(trigger.agentSessionId);
+
+    if (!run) {
+      console.log(
+        `[agent-session-trigger] stop ignored; no run for agentSessionId=${trigger.agentSessionId}`,
+      );
+      return { ignored: true };
+    }
+
+    if (run.state === "completed") {
+      return { run };
+    }
+
+    await this.sandboxService.destroyRunSandbox(run).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(`[agent-session-trigger] failed to destroy sandbox for run id=${run.id}: ${message}`);
+    });
+
+    const completedRun = canStopRun(run)
+      ? await this.runStore.transitionRun(run.id, "completed")
+      : run;
+
+    await this.linearService.emitActivity(trigger.agentSessionId, {
+      type: "response",
+      body: "Stopped — I won't continue this run.",
+    });
+
+    return { run: completedRun };
   }
 
   private async handleCreated(
@@ -164,6 +205,10 @@ export class AgentSessionTriggerService {
 
     return { run: updatedRun };
   }
+}
+
+function canStopRun(run: Run): boolean {
+  return canTransitionRun(run.state, "completed");
 }
 
 function getPromptedResponseBody(

@@ -22,6 +22,13 @@ const defaultLinearOAuthService: LinearOAuthClient = {
       hasRefreshToken: true,
     };
   },
+  async ensureFreshAccessToken() {
+    return {
+      appUserId: "linear-app-user-1",
+      accessToken: "access-token-1",
+      scope: "read write app:assignable app:mentionable",
+    };
+  },
 };
 
 const noopLinearService: LinearAgentClient = {
@@ -60,6 +67,7 @@ const sandboxService: SandboxClient = {
     return { stdout: "", stderr: "", exitCode: 0 };
   },
   async destroySession() {},
+  async destroyRunSandbox() {},
 };
 
 function createTestRoutes(
@@ -189,6 +197,9 @@ describe("routes", () => {
           scope: "read write app:assignable app:mentionable",
           hasRefreshToken: true,
         };
+      },
+      async ensureFreshAccessToken() {
+        throw new Error("ensureFreshAccessToken is not used in OAuth callback route tests");
       },
     };
     const routes = createTestRoutes(
@@ -461,6 +472,82 @@ describe("routes", () => {
     });
     expect(emittedActivities).toEqual([
       { type: "response", body: "Got it — I’ll use that repository." },
+    ]);
+  });
+
+  test("stops an active run when Linear sends a stop signal", async () => {
+    const runStore = new InMemoryRunStore({ createRunId: () => "run-1" });
+    const run = await runStore.createRun({
+      agentSessionId: "session-1",
+      repoUrl: "https://github.com/acme/repo",
+    });
+    await runStore.saveRun({
+      ...run,
+      sandbox: {
+        containerId: "container-run-1",
+        status: "ready",
+        workspacePrepared: true,
+        branchName: "b-moe/run-1",
+      },
+    });
+    const emittedActivities: Array<{ type: string; body: string | undefined }> = [];
+    const enqueuedRunIds: string[] = [];
+    let destroyedContainerId: string | undefined;
+    const linearService: LinearAgentClient = {
+      async emitActivity(_agentSessionId, content) {
+        emittedActivities.push({ type: content.type, body: content.body });
+      },
+      async addPullRequestUrl() {},
+    };
+    const agentRunQueue: AgentRunQueue = {
+      async enqueueRun(runId) {
+        enqueuedRunIds.push(runId);
+      },
+    };
+    const stoppingSandboxService: SandboxClient = {
+      ...sandboxService,
+      async destroyRunSandbox(stoppedRun) {
+        destroyedContainerId = stoppedRun.sandbox?.containerId;
+      },
+    };
+    const container = createContainer<Cradle>();
+    container.register({
+      env: asValue(loadEnv({ REDIS_HOST: "localhost" })),
+      redisClient: asValue(undefined),
+      linearOAuthService: asValue(defaultLinearOAuthService),
+      linearService: asValue(linearService),
+      agentRunQueue: asValue(agentRunQueue),
+      runStore: asValue(runStore),
+      linearInstallStore: asValue(new InMemoryLinearInstallStore()),
+      repositoryService: asValue(repositoryService),
+      agentSessionTriggerService: asValue(new AgentSessionTriggerService({
+        linearService,
+        runStore,
+        agentRunQueue,
+        repositoryService,
+        sandboxService: stoppingSandboxService,
+      })),
+    });
+    const routes = createRoutes(container);
+
+    const response = await routes.fetch(
+      new Request("http://localhost/webhook/linear", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "AgentSessionEvent",
+          action: "prompted",
+          agentSession: { id: "session-1" },
+          agentActivity: { body: "stop", signal: "stop" },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await runStore.getRun(run.id)).toMatchObject({ state: "completed" });
+    expect(destroyedContainerId).toBe("container-run-1");
+    expect(enqueuedRunIds).toEqual([]);
+    expect(emittedActivities).toEqual([
+      { type: "response", body: "Stopped — I won't continue this run." },
     ]);
   });
 

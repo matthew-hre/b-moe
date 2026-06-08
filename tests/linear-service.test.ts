@@ -1,5 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { LinearNotInstalledError, LinearService } from "../src/services/linear.service";
+import type { LinearOAuthClient } from "../src/services/linear-oauth.service";
 import { InMemoryLinearInstallStore } from "../src/store/linear-install.store";
 
 async function storeWithInstall(): Promise<InMemoryLinearInstallStore> {
@@ -11,6 +12,23 @@ async function storeWithInstall(): Promise<InMemoryLinearInstallStore> {
   });
 
   return store;
+}
+
+function createLinearOAuthService(store: InMemoryLinearInstallStore): LinearOAuthClient {
+  return {
+    async installFromAuthorizationCode() {
+      throw new Error("installFromAuthorizationCode is not used in LinearService tests");
+    },
+    async ensureFreshAccessToken() {
+      const install = await store.getInstall();
+
+      if (!install) {
+        throw new Error("Linear app is not installed; complete the OAuth flow first");
+      }
+
+      return install;
+    },
+  };
 }
 
 function mockGraphQLFetch(
@@ -42,8 +60,9 @@ describe("LinearService", () => {
       return { data: { agentActivityCreate: { success: true } } };
     });
 
+    const store = await storeWithInstall();
     const service = new LinearService({
-      linearInstallStore: await storeWithInstall(),
+      linearOAuthService: createLinearOAuthService(store),
     });
 
     await service.emitActivity("session-1", { type: "thought", body: "Looking into this" });
@@ -67,8 +86,9 @@ describe("LinearService", () => {
       return { data: { agentSessionUpdateExternalUrl: { success: true } } };
     });
 
+    const store = await storeWithInstall();
     const service = new LinearService({
-      linearInstallStore: await storeWithInstall(),
+      linearOAuthService: createLinearOAuthService(store),
     });
 
     await service.addPullRequestUrl("session-1", {
@@ -89,7 +109,7 @@ describe("LinearService", () => {
 
   test("throws when the app is not installed", async () => {
     const service = new LinearService({
-      linearInstallStore: new InMemoryLinearInstallStore(),
+      linearOAuthService: createLinearOAuthService(new InMemoryLinearInstallStore()),
     });
 
     expect(
@@ -102,8 +122,9 @@ describe("LinearService", () => {
       errors: [{ message: "boom" }],
     }));
 
+    const store = await storeWithInstall();
     const service = new LinearService({
-      linearInstallStore: await storeWithInstall(),
+      linearOAuthService: createLinearOAuthService(store),
     });
 
     expect(

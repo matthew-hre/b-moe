@@ -1,7 +1,7 @@
 import { LinearClient } from "@linear/sdk";
 import { z } from "zod";
 import type { Env } from "../config/env";
-import type { LinearInstallStore } from "../store/linear-install.store";
+import type { LinearInstall, LinearInstallStore } from "../store/linear-install.store";
 
 const LinearTokenResponseSchema = z.object({
   access_token: z.string().min(1),
@@ -32,7 +32,10 @@ export interface LinearOAuthInstall {
 
 export interface LinearOAuthClient {
   installFromAuthorizationCode(input: InstallFromAuthorizationCodeInput): Promise<LinearOAuthInstall>;
+  ensureFreshAccessToken(appUserId?: string): Promise<LinearInstall>;
 }
+
+const ACCESS_TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
 
 export class MissingLinearOAuthConfigError extends Error {
   constructor(readonly missingKeys: readonly string[]) {
@@ -64,6 +67,30 @@ export class LinearOAuthService implements LinearOAuthClient {
     this.linearInstallStore = linearInstallStore;
     this.fetch = fetchImplementation;
     this.createClient = createClient;
+  }
+
+  async ensureFreshAccessToken(appUserId?: string): Promise<LinearInstall> {
+    const install = await this.linearInstallStore.getInstall(appUserId);
+
+    if (!install) {
+      throw new Error("Linear app is not installed; complete the OAuth flow first");
+    }
+
+    if (!shouldRefreshAccessToken(install)) {
+      return install;
+    }
+
+    if (!install.refreshToken) {
+      console.log(`[linear-oauth] access token expired for appUserId=${install.appUserId} but no refresh token is stored`);
+      return install;
+    }
+
+    console.log(`[linear-oauth] refreshing access token for appUserId=${install.appUserId}`);
+    const refreshedInstall = await this.refreshAccessToken(install);
+    await this.linearInstallStore.saveInstall(refreshedInstall);
+    console.log(`[linear-oauth] refreshed access token for appUserId=${refreshedInstall.appUserId}`);
+
+    return refreshedInstall;
   }
 
   async installFromAuthorizationCode(
@@ -121,6 +148,37 @@ export class LinearOAuthService implements LinearOAuthClient {
     };
   }
 
+  private async refreshAccessToken(install: LinearInstall): Promise<LinearInstall> {
+    const config = this.getRequiredConfig();
+    const tokenResponse = await this.fetch("https://api.linear.app/oauth/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: install.refreshToken as string,
+        client_id: config.linearClientId,
+        client_secret: config.linearClientSecret,
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      console.log(`[linear-oauth] token refresh failed status=${tokenResponse.status}`);
+      throw new LinearOAuthExchangeError("Linear OAuth token refresh failed");
+    }
+
+    const token = LinearTokenResponseSchema.parse(await tokenResponse.json());
+
+    return {
+      appUserId: install.appUserId,
+      accessToken: token.access_token,
+      scope: token.scope,
+      expiresAt: new Date(Date.now() + token.expires_in * 1000),
+      refreshToken: token.refresh_token ?? install.refreshToken,
+    };
+  }
+
   private getRequiredConfig(): { readonly linearClientId: string; readonly linearClientSecret: string } {
     const missingKeys: string[] = [];
     const { linearClientId, linearClientSecret } = this.env;
@@ -142,4 +200,12 @@ export class LinearOAuthService implements LinearOAuthClient {
       linearClientSecret: linearClientSecret as string,
     };
   }
+}
+
+function shouldRefreshAccessToken(install: LinearInstall, now = Date.now()): boolean {
+  if (!install.expiresAt) {
+    return false;
+  }
+
+  return install.expiresAt.getTime() - ACCESS_TOKEN_REFRESH_BUFFER_MS <= now;
 }

@@ -35,6 +35,11 @@ describe("run state machine", () => {
     ["acting", "awaiting_input"],
     ["awaiting_input", "refining"],
     ["awaiting_input", "acting"],
+    ["queued", "completed"],
+    ["refining", "completed"],
+    ["acting", "completed"],
+    ["awaiting_input", "completed"],
+    ["pr_opened", "completed"],
   ] satisfies Array<[RunState, RunState]>)
     ("allows %s to %s", (currentState: RunState, nextState: RunState) => {
       expect(canTransitionRun(currentState, nextState)).toBe(true);
@@ -43,7 +48,6 @@ describe("run state machine", () => {
   test.each([
     ["queued", "acting"],
     ["refining", "responding"],
-    ["acting", "completed"],
     ["completed", "monitoring"],
   ] satisfies Array<[RunState, RunState]>)
     ("rejects %s to %s", (currentState: RunState, nextState: RunState) => {

@@ -70,11 +70,11 @@ export type Run = Readonly<z.infer<typeof RunSchema>>;
 const pausablePhases = ["refining", "acting"] as const satisfies readonly RunState[];
 
 const allowedTransitions = {
-  queued: ["refining"],
-  refining: ["acting", "awaiting_input"],
-  acting: ["pr_opened", "awaiting_input"],
-  awaiting_input: pausablePhases,
-  pr_opened: ["monitoring"],
+  queued: ["refining", "completed"],
+  refining: ["acting", "awaiting_input", "completed"],
+  acting: ["pr_opened", "awaiting_input", "completed"],
+  awaiting_input: [...pausablePhases, "completed"],
+  pr_opened: ["monitoring", "completed"],
   monitoring: ["responding", "completed"],
   responding: ["monitoring"],
   completed: [],
