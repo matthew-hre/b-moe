@@ -169,7 +169,7 @@ docker/sandbox/Dockerfile          — Sandbox container image
 - **Repository resolution** — Alias mapping from env config, prompt context parsing
 - **LLM service** — OpenRouter integration via Vercel AI SDK
 - **Redis stores** — Run state, Linear install tokens
-- **Test suite** — 30 tests across service, model, and store layers
+- **Test suite** — 157 tests across 18 test files
 
 ### 🔲 Planned
 
