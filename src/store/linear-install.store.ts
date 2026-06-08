@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { createLogger } from "../logger";
+
+const logger = createLogger("linear-install-store");
 
 export const LinearInstallSchema = z
   .object({
@@ -75,7 +78,7 @@ export class RedisLinearInstallStore implements LinearInstallStore {
     const parsedInstall = LinearInstallSchema.parse(install);
     const serializedInstall = serializeInstall(parsedInstall);
 
-    console.log(`[linear-install-store:redis] saving install appUserId=${parsedInstall.appUserId}`);
+    logger.info(`redis saving install appUserId=${parsedInstall.appUserId}`);
 
     await this.redis
       .multi()
@@ -83,28 +86,28 @@ export class RedisLinearInstallStore implements LinearInstallStore {
       .set(REDIS_DEFAULT_INSTALL_KEY, parsedInstall.appUserId)
       .exec();
 
-    console.log(`[linear-install-store:redis] saved install appUserId=${parsedInstall.appUserId}`);
+    logger.info(`redis saved install appUserId=${parsedInstall.appUserId}`);
 
     return parsedInstall;
   }
 
   async getInstall(appUserId?: string): Promise<LinearInstall | undefined> {
-    console.log(`[linear-install-store:redis] getInstall requested appUserId=${appUserId ?? "default"}`);
+    logger.info(`redis getInstall requested appUserId=${appUserId ?? "default"}`);
     const resolvedAppUserId = appUserId ?? (await this.redis.get(REDIS_DEFAULT_INSTALL_KEY));
 
     if (!resolvedAppUserId) {
-      console.log("[linear-install-store:redis] no default install found");
+      logger.info("redis no default install found");
       return undefined;
     }
 
     const serializedInstall = await this.redis.get(installKey(resolvedAppUserId));
 
     if (!serializedInstall) {
-      console.log(`[linear-install-store:redis] no install found for appUserId=${resolvedAppUserId}`);
+      logger.info(`redis no install found for appUserId=${resolvedAppUserId}`);
       return undefined;
     }
 
-    console.log(`[linear-install-store:redis] found install appUserId=${resolvedAppUserId}`);
+    logger.info(`redis found install appUserId=${resolvedAppUserId}`);
 
     return deserializeInstall(serializedInstall);
   }
@@ -116,20 +119,20 @@ export class InMemoryLinearInstallStore implements LinearInstallStore {
   async saveInstall(install: LinearInstall): Promise<LinearInstall> {
     const parsedInstall = LinearInstallSchema.parse(install);
 
-    console.log(`[linear-install-store:memory] saving install appUserId=${parsedInstall.appUserId}`);
+    logger.info(`memory saving install appUserId=${parsedInstall.appUserId}`);
     this.installs.set(parsedInstall.appUserId, parsedInstall);
 
     return parsedInstall;
   }
 
   async getInstall(appUserId?: string): Promise<LinearInstall | undefined> {
-    console.log(`[linear-install-store:memory] getInstall requested appUserId=${appUserId ?? "default"}`);
+    logger.info(`memory getInstall requested appUserId=${appUserId ?? "default"}`);
 
     if (appUserId) {
       const install = this.installs.get(appUserId);
 
-      console.log(
-        `[linear-install-store:memory] ${install ? "found" : "missing"} install appUserId=${appUserId}`,
+      logger.info(
+        `memory ${install ? "found" : "missing"} install appUserId=${appUserId}`,
       );
 
       return install ? LinearInstallSchema.parse(install) : undefined;
@@ -138,7 +141,7 @@ export class InMemoryLinearInstallStore implements LinearInstallStore {
     // Single-tenant convenience: return the only install when no id is given.
     const [install] = this.installs.values();
 
-    console.log(`[linear-install-store:memory] ${install ? "found" : "missing"} default install`);
+    logger.info(`memory ${install ? "found" : "missing"} default install`);
 
     return install ? LinearInstallSchema.parse(install) : undefined;
   }

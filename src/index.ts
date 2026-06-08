@@ -1,5 +1,8 @@
 import { createDiContainer } from "./config/container";
 import { createRoutes } from "./api/routes";
+import { createLogger } from "./logger";
+
+const logger = createLogger("startup");
 
 const PORT = parseInt(process.env.PORT ?? "3000");
 
@@ -9,15 +12,11 @@ const { env } = container.cradle;
 
 container.cradle.agentRunWorker.start();
 
-// oxlint-disable-next-line
-console.log(
-  `[startup] REDIS_HOST=${env.redisHost} REDIS_PORT=${env.redisPort} redisClient=enabled`,
+logger.info(
+  `REDIS_HOST=${env.redisHost} REDIS_PORT=${env.redisPort} redisClient=enabled`,
 );
-// oxlint-disable-next-line
-console.log(`[startup] LINEAR_CLIENT_ID=${env.linearClientId ? "set" : "unset"} LINEAR_REDIRECT_URI=${env.linearRedirectUri ?? "unset"}`);
-// this is like the one necessary log statement
-// oxlint-disable-next-line
-console.log(`Server running on http://localhost:${PORT}`);
+logger.info(`LINEAR_CLIENT_ID=${env.linearClientId ? "set" : "unset"} LINEAR_REDIRECT_URI=${env.linearRedirectUri ?? "unset"}`);
+logger.info(`Server running on http://localhost:${PORT}`);
 
 Bun.serve({
   fetch: app.fetch,

@@ -1,5 +1,8 @@
 import { LinearClient } from "@linear/sdk";
+import { createLogger } from "../logger";
 import type { LinearOAuthClient } from "./linear-oauth.service";
+
+const logger = createLogger("linear-service");
 
 export type AgentActivityType = "thought" | "action" | "elicitation" | "response" | "error";
 
@@ -50,17 +53,17 @@ export class LinearService implements LinearAgentClient {
   }
 
   async emitActivity(agentSessionId: string, content: AgentActivityContent): Promise<void> {
-    console.log(`[linear-service] emitting activity type=${content.type} agentSessionId=${agentSessionId}`);
+    logger.info(`emitting activity type=${content.type} agentSessionId=${agentSessionId}`);
     const client = await this.getClient();
     const result = await client.createAgentActivity({
       agentSessionId,
       content,
     });
     if (!result.success) {
-      console.log(`[linear-service] agentActivityCreate returned success=false`);
+      logger.warn("agentActivityCreate returned success=false");
       throw new LinearApiError("agentActivityCreate returned success=false");
     }
-    console.log(`[linear-service] emitted activity type=${content.type} agentSessionId=${agentSessionId}`);
+    logger.info(`emitted activity type=${content.type} agentSessionId=${agentSessionId}`);
   }
 
   async addPullRequestUrl(
@@ -83,14 +86,14 @@ export class LinearService implements LinearAgentClient {
       install = await this.linearOAuthService.ensureFreshAccessToken();
     } catch (error) {
       if (error instanceof Error && error.message === "Linear app is not installed; complete the OAuth flow first") {
-        console.log("[linear-service] no Linear install available");
+        logger.warn("no Linear install available");
         throw new LinearNotInstalledError();
       }
 
       throw error;
     }
 
-    console.log(`[linear-service] using install appUserId=${install.appUserId}`);
+    logger.info(`using install appUserId=${install.appUserId}`);
 
     return this.createClient(install.accessToken);
   }

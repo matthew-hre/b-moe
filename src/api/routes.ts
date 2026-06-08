@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { LinearWebhookClient } from "@linear/sdk/webhooks";
 import type { AwilixContainer } from "awilix";
+import { createLogger } from "../logger";
 import type { Cradle } from "../config/container";
 import { getAgentSessionTrigger, LinearWebhookEventSchema } from "../models/linear";
 import type { AgentSessionEventLike } from "../models/linear";
@@ -10,6 +11,8 @@ import {
   MissingLinearOAuthConfigError,
 } from "../services/linear-oauth.service";
 import { buildLinearOAuthAuthorizeUrl } from "../services/linear-oauth-url";
+
+const logger = createLogger("routes");
 
 interface Routes {
   fetch(request: Request): Promise<Response>;
@@ -73,7 +76,7 @@ export function createRoutes(container: AwilixContainer<Cradle>): Routes {
       }
 
       if (url.pathname === "/oauth/linear/callback" && request.method === "GET") {
-        console.log("[routes] received Linear OAuth callback");
+        logger.info("received Linear OAuth callback");
         const oauthError = url.searchParams.get("error");
 
         if (oauthError) {
@@ -121,19 +124,19 @@ export function createRoutes(container: AwilixContainer<Cradle>): Routes {
       }
 
       if (url.pathname === "/webhook/linear" && request.method === "POST") {
-        console.log("[routes] received Linear webhook");
+        logger.info("received Linear webhook");
 
         if (webhookClient && webhookSecret) {
           const rawBody = Buffer.from(await request.arrayBuffer());
           const signature = request.headers.get("linear-signature");
           const timestampHeader = request.headers.get("linear-timestamp");
 
-          console.log(
-            `[routes] webhook signature=${signature ? (signature.length > 12 ? signature.substring(0, 12) + "..." : signature) : "missing"} timestampHeader=${timestampHeader ?? "missing"} bodyLength=${rawBody.length}`,
+          logger.info(
+            `webhook signature=${signature ? (signature.length > 12 ? signature.substring(0, 12) + "..." : signature) : "missing"} timestampHeader=${timestampHeader ?? "missing"} bodyLength=${rawBody.length}`,
           );
 
           if (!signature) {
-            console.log("[routes] webhook missing linear-signature header");
+            logger.warn("webhook missing linear-signature header");
             return jsonResponse({ error: "Missing Linear webhook signature" }, { status: 401 });
           }
 
@@ -141,7 +144,7 @@ export function createRoutes(container: AwilixContainer<Cradle>): Routes {
           try {
             payload = JSON.parse(rawBody.toString()) as Record<string, unknown>;
           } catch {
-            console.log("[routes] webhook body is not valid JSON");
+            logger.warn("webhook body is not valid JSON");
             return jsonResponse({ error: "Invalid JSON body" }, { status: 400 });
           }
 
@@ -159,18 +162,18 @@ export function createRoutes(container: AwilixContainer<Cradle>): Routes {
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             const expected = createHmac("sha256", webhookSecret).update(rawBody).digest("hex");
-            console.log(
-              `[routes] webhook verification failed: ${message} (configured secretLength=${webhookSecret.length} expectedSignature=${expected.substring(0, 12)}... receivedSignature=${signature.substring(0, 12)}...)`,
+            logger.error(
+              `webhook verification failed: ${message} (configured secretLength=${webhookSecret.length} expectedSignature=${expected.substring(0, 12)}... receivedSignature=${signature.substring(0, 12)}...)`,
             );
             return jsonResponse({ error: "Invalid Linear webhook signature" }, { status: 401 });
           }
 
-          console.log(
-            `[routes] webhook verified; type=${payload.type ?? "unknown"} action=${payload.action ?? "none"}`,
+          logger.info(
+            `webhook verified; type=${payload.type ?? "unknown"} action=${payload.action ?? "none"}`,
           );
 
           if (payload.type !== "AgentSessionEvent") {
-            console.log(`[routes] webhook type=${payload.type ?? "unknown"} ignored`);
+            logger.info(`webhook type=${payload.type ?? "unknown"} ignored`);
             return jsonResponse({ ignored: true });
           }
 
@@ -179,7 +182,7 @@ export function createRoutes(container: AwilixContainer<Cradle>): Routes {
             return await handleAgentSessionTrigger(trigger, container.cradle.agentSessionTriggerService);
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            console.log(`[routes] webhook processing failed: ${message}`);
+            logger.error(`webhook processing failed: ${message}`);
             return jsonResponse({ error: "Linear webhook processing failed" }, { status: 500 });
           }
         }
@@ -196,12 +199,12 @@ export function createRoutes(container: AwilixContainer<Cradle>): Routes {
         const parseResult = LinearWebhookEventSchema.safeParse(body);
 
         if (!parseResult.success) {
-          console.log("[routes] invalid Linear webhook payload", parseResult.error.flatten());
+          logger.warn("invalid Linear webhook payload");
           return jsonResponse({ error: "Invalid Linear webhook payload" }, { status: 400 });
         }
 
-        console.log(
-          `[routes] Linear webhook parsed type=${parseResult.data.type} action=${"action" in parseResult.data ? parseResult.data.action : "none"}`,
+        logger.info(
+          `Linear webhook parsed type=${parseResult.data.type} action=${"action" in parseResult.data ? parseResult.data.action : "none"}`,
         );
 
         if (parseResult.data.type === "AgentSessionEvent") {
@@ -211,7 +214,7 @@ export function createRoutes(container: AwilixContainer<Cradle>): Routes {
           return await handleAgentSessionTrigger(trigger, container.cradle.agentSessionTriggerService);
         }
 
-        console.log(`[routes] Linear webhook type=${parseResult.data.type} ignored`);
+        logger.info(`Linear webhook type=${parseResult.data.type} ignored`);
         return jsonResponse({ ignored: true });
       }
 

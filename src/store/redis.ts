@@ -1,5 +1,8 @@
 import Redis from "ioredis";
+import { createLogger } from "../logger";
 import type { Env } from "../config/env";
+
+const logger = createLogger("redis");
 
 export type RedisClient = Redis;
 
@@ -15,7 +18,7 @@ export function createRedisClient(env: Env): RedisClient {
     throw new MissingRedisConfigError();
   }
 
-  console.log(`[redis] creating Redis client for ${env.redisHost}:${env.redisPort}`);
+  logger.info(`creating Redis client for ${env.redisHost}:${env.redisPort}`);
 
   const redis = new Redis({
     host: env.redisHost,
@@ -24,11 +27,11 @@ export function createRedisClient(env: Env): RedisClient {
     maxRetriesPerRequest: null,
   });
 
-  redis.on("connect", () => console.log("[redis] connected"));
-  redis.on("ready", () => console.log("[redis] ready"));
-  redis.on("close", () => console.log("[redis] connection closed"));
-  redis.on("reconnecting", () => console.log("[redis] reconnecting"));
-  redis.on("error", (error) => console.log(`[redis] error: ${error.message}`));
+  redis.on("connect", () => logger.info("connected"));
+  redis.on("ready", () => logger.info("ready"));
+  redis.on("close", () => logger.info("connection closed"));
+  redis.on("reconnecting", () => logger.info("reconnecting"));
+  redis.on("error", (error) => logger.error(`error: ${error.message}`));
 
   return redis;
 }
